@@ -1,13 +1,15 @@
 import { useState, useMemo, useEffect } from "react";
 
+const DKK_RATE = 7.46;
+const LS_KEY = "tcg-wantlist-v1";
+
 // ─── API helpers ─────────────────────────────────────────────────────────────
 
 async function searchTCGCards(query, type) {
-  const rarity =
-    type === "SIR" ? "Special Illustration Rare" : "Illustration Rare";
+  const rarity = type === "SIR" ? "Special Illustration Rare" : "Illustration Rare";
   const q = encodeURIComponent(`name:${query}* rarity:"${rarity}"`);
   const res = await fetch(
-    `https://api.pokemontcg.io/v2/cards?q=${q}&select=id,name,images,set&orderBy=-set.releaseDate&pageSize=24`
+    `https://api.pokemontcg.io/v2/cards?q=${q}&select=id,name,images,set,artist&orderBy=-set.releaseDate&pageSize=24`
   );
   if (!res.ok) throw new Error("TCG API fejlede");
   const data = await res.json();
@@ -17,10 +19,9 @@ async function searchTCGCards(query, type) {
 async function fetchCardmarketPrice(cardName, setName) {
   const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
   if (!apiKey) {
-    console.warn("Mangler VITE_ANTHROPIC_API_KEY i .env — pris-hentning deaktiveret lokalt.");
+    console.warn("Mangler VITE_ANTHROPIC_API_KEY — pris-hentning deaktiveret.");
     return { price: null, currency: "EUR", url: null };
   }
-
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -62,6 +63,60 @@ RULES:
   } catch (e) {
     console.error("Pris-hentning fejlede:", e);
     return { price: null, currency: "EUR", url: null };
+  }
+}
+
+// ─── Export helpers ───────────────────────────────────────────────────────────
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportJSON(sets) {
+  triggerDownload(
+    new Blob([JSON.stringify(sets, null, 2)], { type: "application/json" }),
+    "tcg-wantlist.json"
+  );
+}
+
+function exportCSV(sets) {
+  const rows = [
+    ["Illustrator", "Interesse", "Type", "Kortnavn", "Sæt", "Pris EUR", "Pris DKK", "Ejet", "Cardmarket"],
+  ];
+  sets.forEach((s) => {
+    s.cards.forEach((c) => {
+      rows.push([
+        s.illustrator,
+        s.want,
+        c.type,
+        c.name,
+        c.tcgSetName || "",
+        c.price ?? "",
+        c.price ? (c.price * DKK_RATE).toFixed(2) : "",
+        c.owned ? "Ja" : "Nej",
+        c.url || "",
+      ]);
+    });
+  });
+  const csv = rows
+    .map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","))
+    .join("\n");
+  triggerDownload(new Blob([csv], { type: "text/csv;charset=utf-8;" }), "tcg-wantlist.csv");
+}
+
+// ─── localStorage ─────────────────────────────────────────────────────────────
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
   }
 }
 
@@ -148,7 +203,7 @@ function SearchModal({ cardName, cardType, onSelect, onClose }) {
               <div className="res-meta">
                 <span className="res-name">{c.name}</span>
                 <span className="res-set">{c.set.name}</span>
-                <span className="res-series">{c.set.series}</span>
+                {c.artist && <span className="res-artist">✏ {c.artist}</span>}
               </div>
             </button>
           ))}
@@ -160,7 +215,7 @@ function SearchModal({ cardName, cardType, onSelect, onClose }) {
 
 // ─── Card Row ─────────────────────────────────────────────────────────────────
 
-function CardRow({ card, onUpdate, onDelete }) {
+function CardRow({ card, currency, onUpdate, onDelete, onArtistDetected }) {
   const [showModal, setShowModal] = useState(false);
 
   const handleSelect = async (tcgCard) => {
@@ -174,15 +229,24 @@ function CardRow({ card, onUpdate, onDelete }) {
       loadingPrice: true,
       price: null,
       url: null,
+      owned: card.owned,
     };
     onUpdate(next);
+    if (tcgCard.artist) onArtistDetected?.(tcgCard.artist);
     const p = await fetchCardmarketPrice(tcgCard.name, tcgCard.set.name);
     onUpdate({ ...next, loadingPrice: false, price: p.price, url: p.url });
   };
 
+  const displayPrice =
+    card.price != null
+      ? currency === "DKK"
+        ? (card.price * DKK_RATE).toFixed(2)
+        : card.price.toFixed(2)
+      : null;
+
   return (
     <>
-      <div className="card-row">
+      <div className={"card-row" + (card.owned ? " owned" : "")}>
         <button
           className="thumb-btn"
           onClick={() => setShowModal(true)}
@@ -233,7 +297,10 @@ function CardRow({ card, onUpdate, onDelete }) {
                   onUpdate({ ...card, price: parseFloat(e.target.value) || null })
                 }
               />
-              <span className="curr">€</span>
+              <span className="curr">{currency === "DKK" ? "kr" : "€"}</span>
+              {displayPrice && currency === "DKK" && (
+                <span className="price-converted">{displayPrice}</span>
+              )}
               {card.url && (
                 <a
                   href={card.url}
@@ -248,6 +315,14 @@ function CardRow({ card, onUpdate, onDelete }) {
             </>
           )}
         </div>
+
+        <button
+          className={"own-btn" + (card.owned ? " owned-on" : "")}
+          onClick={() => onUpdate({ ...card, owned: !card.owned })}
+          title={card.owned ? "Ejer det — klik for at fjerne" : "Markér som ejet"}
+        >
+          {card.owned ? "✓" : "○"}
+        </button>
 
         <button className="del" onClick={onDelete}>×</button>
       </div>
@@ -266,9 +341,12 @@ function CardRow({ card, onUpdate, onDelete }) {
 
 // ─── Illustrator Card ─────────────────────────────────────────────────────────
 
-function IllusCard({ set, onUpdate, onDelete }) {
+function IllusCard({ set, currency, onUpdate, onDelete }) {
   const hasLoading = set.cards.some((c) => c.loadingPrice);
   const total = set.cards.reduce((s, c) => s + (c.price || 0), 0);
+  const displayTotal =
+    currency === "DKK" ? (total * DKK_RATE).toFixed(2) : total.toFixed(2);
+  const currSymbol = currency === "DKK" ? "kr" : "€";
 
   const updCard = (idx, next) =>
     onUpdate({ ...set, cards: set.cards.map((c, i) => (i === idx ? next : c)) });
@@ -279,7 +357,7 @@ function IllusCard({ set, onUpdate, onDelete }) {
       ...set,
       cards: [
         ...set.cards,
-        { id: Date.now(), name: "", type: "SIR", price: null, image: null, url: null, loadingPrice: false },
+        { id: Date.now(), name: "", type: "SIR", price: null, image: null, url: null, loadingPrice: false, owned: false },
       ],
     });
 
@@ -305,8 +383,12 @@ function IllusCard({ set, onUpdate, onDelete }) {
           <CardRow
             key={c.id}
             card={c}
+            currency={currency}
             onUpdate={(next) => updCard(i, next)}
             onDelete={() => delCard(i)}
+            onArtistDetected={(artist) => {
+              if (!set.illustrator) onUpdate({ ...set, illustrator: artist });
+            }}
           />
         ))}
       </div>
@@ -319,12 +401,16 @@ function IllusCard({ set, onUpdate, onDelete }) {
           <StarRating value={set.want} onChange={(v) => onUpdate({ ...set, want: v })} />
         </div>
         <div style={{ textAlign: "right" }}>
-          <div className="icard-label">TOTAL (€)</div>
+          <div className="icard-label">TOTAL ({currSymbol})</div>
           {hasLoading ? (
             <span className="spinning" style={{ fontSize: 22, color: "#e8b84b" }}>⟳</span>
           ) : (
             <span className="total">
-              {total.toLocaleString("da-DK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €
+              {parseFloat(displayTotal).toLocaleString("da-DK", {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              })}{" "}
+              {currSymbol}
             </span>
           )}
         </div>
@@ -338,10 +424,17 @@ function IllusCard({ set, onUpdate, onDelete }) {
 const INIT = [{ id: 1, illustrator: "", cards: [], want: 3 }];
 
 export default function App() {
-  const [sets, setSets] = useState(INIT);
+  const [sets, setSets] = useState(() => loadState() ?? INIT);
   const [sort, setSort] = useState("want");
   const [dir, setDir] = useState("desc");
   const [filter, setFilter] = useState("all");
+  const [currency, setCurrency] = useState("EUR");
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify(sets));
+    } catch {}
+  }, [sets]);
 
   const upd = (id, next) => setSets((s) => s.map((x) => (x.id === id ? next : x)));
   const del = (id) => setSets((s) => s.filter((x) => x.id !== id));
@@ -366,6 +459,9 @@ export default function App() {
   }, [sets, sort, dir, filter]);
 
   const grand = useMemo(() => sorted.reduce((a, s) => a + s._total, 0), [sorted]);
+  const grandDisplay =
+    currency === "DKK" ? (grand * DKK_RATE).toFixed(2) : grand.toFixed(2);
+  const currSymbol = currency === "DKK" ? "kr" : "€";
 
   return (
     <>
@@ -403,10 +499,26 @@ export default function App() {
               {f === "all" ? "Alle" : f}
             </button>
           ))}
+          <span className="ctrl-lbl" style={{ marginLeft: 12 }}>VALUTA</span>
+          {["EUR", "DKK"].map((c) => (
+            <button
+              key={c}
+              className={"ctrl" + (currency === c ? " active" : "")}
+              onClick={() => setCurrency(c)}
+            >
+              {c}
+            </button>
+          ))}
           <div style={{ flex: 1 }} />
+          <button className="export-btn" onClick={() => exportCSV(sets)} title="Eksporter til CSV">CSV</button>
+          <button className="export-btn" onClick={() => exportJSON(sets)} title="Eksporter til JSON">JSON</button>
           <span className="ctrl-lbl">TOTAL</span>
           <span className="grand">
-            {grand.toLocaleString("da-DK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €
+            {parseFloat(grandDisplay).toLocaleString("da-DK", {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}{" "}
+            {currSymbol}
           </span>
         </div>
 
@@ -415,6 +527,7 @@ export default function App() {
             <IllusCard
               key={s.id}
               set={s}
+              currency={currency}
               onUpdate={(next) => upd(s.id, next)}
               onDelete={() => del(s.id)}
             />
@@ -454,6 +567,9 @@ body { background: #0d0d0f; color: #e8e4df; font-family: 'DM Sans', sans-serif; 
 .arr { color: #e8b84b; }
 .grand { font-family: 'Bebas Neue', sans-serif; font-size: 22px; letter-spacing: 1px; color: #e8b84b; }
 
+.export-btn { background: #131318; border: 1px solid #202028; color: #4a4858; font-family: 'DM Sans', sans-serif; font-size: 10px; letter-spacing: 2px; padding: 5px 10px; border-radius: 3px; cursor: pointer; transition: all .15s; text-transform: uppercase; }
+.export-btn:hover { border-color: #e8b84b44; color: #e8b84b; }
+
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 16px; }
 
 .icard { background: #111114; border: 1px solid #1c1c22; border-radius: 8px; padding: 22px; display: flex; flex-direction: column; gap: 14px; transition: border-color .2s; }
@@ -474,7 +590,8 @@ body { background: #0d0d0f; color: #e8e4df; font-family: 'DM Sans', sans-serif; 
 .star.on { color: #e8b84b; }
 .star:hover { transform: scale(1.15); }
 
-.card-row { display: flex; align-items: center; gap: 7px; }
+.card-row { display: flex; align-items: center; gap: 7px; padding: 4px 6px; border-radius: 5px; transition: background .15s; }
+.card-row.owned { background: #0d1a0f; }
 
 .thumb-btn { background: #0a0a0d; border: 1px solid #1c1c24; border-radius: 5px; cursor: pointer; padding: 0; overflow: hidden; width: 48px; height: 68px; flex-shrink: 0; transition: border-color .15s, box-shadow .15s; display: flex; align-items: center; justify-content: center; }
 .thumb-btn:hover { border-color: #e8b84b55; box-shadow: 0 0 12px #e8b84b18; }
@@ -497,9 +614,14 @@ body { background: #0d0d0f; color: #e8e4df; font-family: 'DM Sans', sans-serif; 
 .price-in::-webkit-inner-spin-button { display: none; }
 input[type=number] { -moz-appearance: textfield; }
 .curr { font-size: 11px; color: #383844; letter-spacing: 1px; }
+.price-converted { font-size: 11px; color: #4a6644; letter-spacing: 0.5px; }
 .cm-link { color: #4a88bf; font-size: 12px; text-decoration: none; transition: color .15s; margin-left: 2px; }
 .cm-link:hover { color: #7ab8ef; }
 .price-spin { font-size: 18px; color: #e8b84b; margin: 0 auto; }
+
+.own-btn { background: none; border: 1px solid #1a2a1a; color: #2a3a2a; border-radius: 3px; font-size: 13px; cursor: pointer; padding: 4px 7px; line-height: 1.2; transition: all .15s; flex-shrink: 0; }
+.own-btn:hover { border-color: #3a6a3a; color: #5a9a5a; }
+.own-btn.owned-on { border-color: #3a6a3a88; color: #5aaa5a; background: #1a3a1a; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 .spinning { display: inline-block; animation: spin 0.9s linear infinite; }
@@ -532,5 +654,5 @@ input[type=number] { -moz-appearance: textfield; }
 .res-meta { display: flex; flex-direction: column; gap: 2px; }
 .res-name { font-size: 11px; color: #c0bcb8; font-weight: 500; line-height: 1.3; }
 .res-set { font-size: 10px; color: #404050; line-height: 1.3; }
-.res-series { font-size: 9px; color: #303040; letter-spacing: 0.5px; }
+.res-artist { font-size: 9px; color: #e8b84b88; letter-spacing: 0.5px; }
 `;
