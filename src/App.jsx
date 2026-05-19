@@ -170,7 +170,7 @@ function StarRating({ value, onChange, color = "#f1a30b" }) {
 
 // ─── Global Search ────────────────────────────────────────────────────────────
 
-function GlobalSearch({ sets, onAddCard }) {
+function GlobalSearch({ sets, onAddCard, addToast }) {
   const [q, setQ]       = useState("");
   const [mode, setMode] = useState("card");
   const [type, setType] = useState("all");
@@ -188,7 +188,7 @@ function GlobalSearch({ sets, onAddCard }) {
     if (!query.trim()) return;
     setLoading(true); setSearched(false);
     try { setResults(await semanticSearch(query, mode, type)); }
-    catch { setResults([]); }
+    catch (err) { setResults([]); addToast?.("Søgning fejlede — tjek din internetforbindelse", "error"); }
     setLoading(false); setSearched(true);
   }, [q, mode, type]);
 
@@ -634,6 +634,106 @@ function SyncBadge({ status }) {
   );
 }
 
+// ─── Toast system ─────────────────────────────────────────────────────────────
+
+function ToastStack({ toasts }) {
+  if (!toasts.length) return null;
+  return (
+    <div className="toast-stack" role="status" aria-live="polite">
+      {toasts.map((t) => (
+        <div key={t.id} className={`toast toast-${t.type}`}>{t.msg}</div>
+      ))}
+    </div>
+  );
+}
+
+function useToasts() {
+  const [toasts, setToasts] = useState([]);
+  const add = useCallback((msg, type = "info") => {
+    const id = Date.now();
+    setToasts((t) => [...t, { id, msg, type }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4000);
+  }, []);
+  return { toasts, add };
+}
+
+// ─── Portfolio ────────────────────────────────────────────────────────────────
+
+function Portfolio({ sets }) {
+  const [typeFilter, setTypeFilter] = useState("all");
+
+  const ownedSets = useMemo(() =>
+    sets
+      .map((s) => ({ ...s, cards: s.cards.filter((c) => c.owned && (typeFilter === "all" || c.type === typeFilter)) }))
+      .filter((s) => s.cards.length > 0),
+    [sets, typeFilter]
+  );
+
+  const totalCards = ownedSets.reduce((n, s) => n + s.cards.length, 0);
+  const totalEur   = ownedSets.reduce((n, s) => n + s.cards.reduce((a, c) => a + (c.price || 0), 0), 0);
+
+  return (
+    <div>
+      <div className="portfolio-header">
+        <div className="portfolio-stats">
+          <div className="portfolio-stat">
+            <span className="field-label">Kort ejet</span>
+            <span className="portfolio-stat-val">{totalCards}</span>
+          </div>
+          <div className="portfolio-stat">
+            <span className="field-label">Samlet værdi</span>
+            <span className="portfolio-stat-val">
+              {totalEur.toLocaleString("da-DK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €
+              <span className="total-dkk" style={{ fontSize: 13, marginLeft: 8 }}>
+                {(totalEur * DKK_RATE).toLocaleString("da-DK", { minimumFractionDigits: 0, maximumFractionDigits: 0 })} kr
+              </span>
+            </span>
+          </div>
+        </div>
+        <div className="btn-group">
+          <span className="toolbar-label">Vis</span>
+          {[["all","Alle"],["SIR","SIR"],["IR","IR"],["SR","SR"],["HR","HR"]].map(([v, l]) => (
+            <button key={v} className={"btn-seg" + (typeFilter === v ? " active" : "")} onClick={() => setTypeFilter(v)}>{l}</button>
+          ))}
+        </div>
+      </div>
+
+      {ownedSets.length === 0 ? (
+        <div className="empty-state" style={{ marginTop: 40 }}>
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.3 }}><path d="M20 7H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="2"/><path d="M6 12h.01M18 12h.01"/></svg>
+          <p>{typeFilter === "all" ? "Ingen ejet kort endnu" : `Ingen ${typeFilter}-kort ejet endnu`}</p>
+          <p className="empty-sub">Markér kort som ejet i Wantlist ved at klikke på ○ ud for kortet</p>
+        </div>
+      ) : (
+        <div className="portfolio-grid">
+          {ownedSets.map((s) => (
+            <div key={s.id} className="portfolio-artist-block">
+              <div className="portfolio-artist-header">
+                <span className="portfolio-artist-name">{s.illustrator || "Ukendt illustrator"}</span>
+                <span className="badge">{s.cards.length} kort</span>
+              </div>
+              <div className="portfolio-cards-row">
+                {s.cards.map((c) => (
+                  <div key={c.id} className="portfolio-card">
+                    {c.image
+                      ? <img src={c.image} alt={c.name} className="portfolio-card-img" loading="lazy" />
+                      : <div className="portfolio-card-ph">?</div>}
+                    <div className="portfolio-card-meta">
+                      <span className={`card-type-inline ${rarityBadgeClass(c.type)}`}>{c.type}</span>
+                      <p className="portfolio-card-name">{c.name}</p>
+                      {c.price != null && <p className="portfolio-card-price">{c.price.toFixed(2)} €</p>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Profile Panel ────────────────────────────────────────────────────────────
 
 function ProfilePanel({ user, sets, onClose, onSignOut }) {
@@ -765,9 +865,11 @@ function AuthScreen() {
 const INIT = [{ id: 1, illustrator: "", cards: [], want: 3, priceRating: 0 }];
 
 export default function App() {
+  const { toasts, add: addToast }   = useToasts();
   const [user, setUser]             = useState(null);
   const [authChecked, setAuthChecked] = useState(!supabase);
   const [showProfile, setShowProfile] = useState(false);
+  const [activeTab, setActiveTab]   = useState("wantlist");
   const [sets, setSets]             = useState(() => loadLocalState() ?? INIT);
   const [sort, setSort]             = useState("want");
   const [dir, setDir]               = useState("desc");
@@ -818,7 +920,7 @@ export default function App() {
         await saveToSupabase(user.id, sets);
         setSyncStatus("saved");
         setTimeout(() => setSyncStatus("idle"), 2000);
-      } catch { setSyncStatus("error"); }
+      } catch { setSyncStatus("error"); addToast("Kunne ikke gemme til Supabase — data er gemt lokalt", "error"); }
     }, SAVE_DEBOUNCE_MS);
   }, [sets, loading]);
   const upd = (id, next) => setSets((s) => s.map((x) => (x.id === id ? next : x)));
@@ -905,57 +1007,78 @@ export default function App() {
           </div>
         </div>
 
-        <GlobalSearch sets={sets} onAddCard={addCardToWantlist} />
+        <GlobalSearch sets={sets} onAddCard={addCardToWantlist} addToast={addToast} />
 
-        <div className="section-heading">
-          <h2 className="section-title">Min liste</h2>
-          <div className="toolbar">
-            <div className="toolbar-left">
-              <div className="btn-group">
-                <span className="toolbar-label">Sorter</span>
-                {["want","price"].map((k) => (
-                  <button key={k} className={"btn-seg" + (sort === k ? " active" : "")} onClick={() => toggleSort(k)}>
-                    {k === "want" ? "Interesse" : "Pris"}{sort === k && <span>{dir === "desc" ? " ↓" : " ↑"}</span>}
-                  </button>
-                ))}
-              </div>
-              <div className="btn-group">
-                <span className="toolbar-label">Vis</span>
-                {[["all","Alle"],["IR","IR"],["SIR","SIR"]].map(([f,l]) => (
-                  <button key={f} className={"btn-seg" + (filter === f ? " active" : "")} onClick={() => setFilter(f)}>{l}</button>
-                ))}
-              </div>
-            </div>
-            <div className="toolbar-right">
-              <button className="btn-plain" onClick={() => exportCSV(sets)}>CSV</button>
-              <button className="btn-plain" onClick={() => exportJSON(sets)}>JSON</button>
-              <div className="total-chip">
-                <span className="total-chip-label">Total</span>
-                <span className="total-chip-val">
-                  {grand.toLocaleString("da-DK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €
-                  <span className="total-dkk-small"> · {(grand * DKK_RATE).toLocaleString("da-DK", { minimumFractionDigits: 0, maximumFractionDigits: 0 })} kr</span>
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="grid">
-          {sorted.map((s) => (
-            <IllusCard key={s.id} set={s}
-              onUpdate={(next) => upd(s.id, next)}
-              onDelete={() => del(s.id)}
-              onAddCard={addCardToWantlist} />
+        {/* ── Tab navigation ── */}
+        <div className="tab-nav-wrap">
+          {[
+            ["wantlist", "Wantlist", sets.reduce((n, s) => n + s.cards.length, 0)],
+            ["portfolio", "Portfolio", sets.reduce((n, s) => n + s.cards.filter((c) => c.owned).length, 0)],
+          ].map(([tab, label, count]) => (
+            <button key={tab} className={"tab-btn" + (activeTab === tab ? " active" : "")} onClick={() => setActiveTab(tab)}>
+              {label}
+              <span className="tab-count">{count}</span>
+            </button>
           ))}
         </div>
 
-        <div className="add-wrap">
-          <button className="btn-primary large" onClick={add}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            Tilføj illustrator manuelt
-          </button>
-        </div>
+        {activeTab === "portfolio" ? (
+          <Portfolio sets={sets} />
+        ) : (
+          <>
+            <div className="section-heading">
+              <div className="toolbar">
+                <div className="toolbar-left">
+                  <div className="btn-group">
+                    <span className="toolbar-label">Sorter</span>
+                    {["want","price"].map((k) => (
+                      <button key={k} className={"btn-seg" + (sort === k ? " active" : "")} onClick={() => toggleSort(k)}>
+                        {k === "want" ? "Interesse" : "Pris"}{sort === k && <span>{dir === "desc" ? " ↓" : " ↑"}</span>}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="btn-group">
+                    <span className="toolbar-label">Vis</span>
+                    {[["all","Alle"],["IR","IR"],["SIR","SIR"]].map(([f,l]) => (
+                      <button key={f} className={"btn-seg" + (filter === f ? " active" : "")} onClick={() => setFilter(f)}>{l}</button>
+                    ))}
+                  </div>
+                </div>
+                <div className="toolbar-right">
+                  <button className="btn-plain" onClick={() => exportCSV(sets)}>CSV</button>
+                  <button className="btn-plain" onClick={() => exportJSON(sets)}>JSON</button>
+                  <div className="total-chip">
+                    <span className="total-chip-label">Total</span>
+                    <span className="total-chip-val">
+                      {grand.toLocaleString("da-DK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €
+                      <span className="total-dkk-small"> · {(grand * DKK_RATE).toLocaleString("da-DK", { minimumFractionDigits: 0, maximumFractionDigits: 0 })} kr</span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid">
+              {sorted.map((s) => (
+                <IllusCard key={s.id} set={s}
+                  onUpdate={(next) => upd(s.id, next)}
+                  onDelete={() => del(s.id)}
+                  onAddCard={addCardToWantlist} />
+              ))}
+            </div>
+
+            <div className="add-wrap">
+              <button className="btn-primary large" onClick={add}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                Tilføj illustrator manuelt
+              </button>
+            </div>
+          </>
+        )}
       </div>
+
+      <ToastStack toasts={toasts} />
+
       {showProfile && user && (
         <ProfilePanel user={user} sets={sets}
           onClose={() => setShowProfile(false)}
@@ -1218,6 +1341,39 @@ input[type=number] { -moz-appearance: textfield; }
 .res-name { font-size: 11px; font-weight: 550; color: var(--p-color-text); line-height: 1.3; }
 .res-set, .res-artist { font-size: 10px; color: var(--p-color-text-secondary); }
 .res-price { font-size: 11px; font-weight: 600; color: var(--p-color-success); margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+/* ── Toast ── */
+.toast-stack { position: fixed; bottom: 24px; right: 24px; z-index: 500; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+.toast { background: #303030; color: #fff; padding: 12px 16px; border-radius: var(--p-border-radius-2); font-size: 13px; max-width: 320px; box-shadow: 0 4px 20px rgba(0,0,0,0.25); animation: toast-in 0.18s ease; line-height: 1.4; }
+.toast.success { background: var(--p-color-success); }
+.toast.error   { background: var(--p-color-critical); }
+.toast.info    { background: #303030; }
+@keyframes toast-in { from { transform: translateY(10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+/* ── Tab navigation ── */
+.tab-nav-wrap { display: flex; gap: 0; background: var(--p-color-bg-surface); border: 1px solid var(--p-color-border); border-radius: var(--p-border-radius-2); overflow: hidden; margin-bottom: var(--p-space-3); width: fit-content; }
+.tab-btn { padding: 8px 20px; font-size: 13px; font-weight: 500; border: none; background: transparent; color: var(--p-color-text-secondary); cursor: pointer; transition: all 0.12s; display: flex; align-items: center; gap: 6px; }
+.tab-btn:hover { background: var(--p-color-bg-surface-hover); color: var(--p-color-text); }
+.tab-btn.active { background: var(--p-color-interactive); color: #fff; }
+.tab-count { font-size: 11px; font-weight: 600; background: rgba(255,255,255,0.2); border-radius: 20px; padding: 1px 7px; }
+.tab-btn:not(.active) .tab-count { background: var(--p-color-bg-fill-disabled); color: var(--p-color-text-secondary); }
+
+/* ── Portfolio ── */
+.portfolio-header { display: flex; align-items: center; justify-content: space-between; gap: var(--p-space-4); background: var(--p-color-bg-surface); border: 1px solid var(--p-color-border); border-radius: var(--p-border-radius-2); padding: var(--p-space-3) var(--p-space-4); margin-bottom: var(--p-space-4); flex-wrap: wrap; }
+.portfolio-stats { display: flex; gap: var(--p-space-5); }
+.portfolio-stat { display: flex; flex-direction: column; gap: 2px; }
+.portfolio-stat-val { font-size: 20px; font-weight: 650; color: var(--p-color-text); font-variant-numeric: tabular-nums; line-height: 1.2; }
+.portfolio-grid { display: flex; flex-direction: column; gap: var(--p-space-4); }
+.portfolio-artist-block { background: var(--p-color-bg-surface); border: 1px solid var(--p-color-border); border-radius: var(--p-border-radius-2); padding: var(--p-space-4); box-shadow: var(--p-shadow-card); }
+.portfolio-artist-header { display: flex; align-items: center; gap: var(--p-space-2); margin-bottom: var(--p-space-3); }
+.portfolio-artist-name { font-size: 16px; font-weight: 600; color: var(--p-color-text); }
+.portfolio-cards-row { display: flex; gap: var(--p-space-2); flex-wrap: wrap; }
+.portfolio-card { width: 120px; flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; }
+.portfolio-card-img { width: 100%; border-radius: var(--p-border-radius-1); box-shadow: var(--p-shadow-card); display: block; aspect-ratio: 5/7; object-fit: cover; }
+.portfolio-card-ph { width: 100%; aspect-ratio: 5/7; background: var(--p-color-bg); border: 1px solid var(--p-color-border); border-radius: var(--p-border-radius-1); display: flex; align-items: center; justify-content: center; color: var(--p-color-text-disabled); font-size: 18px; }
+.portfolio-card-meta { display: flex; flex-direction: column; gap: 2px; }
+.portfolio-card-name { font-size: 11px; font-weight: 550; color: var(--p-color-text); line-height: 1.3; }
+.portfolio-card-price { font-size: 11px; font-weight: 600; color: var(--p-color-success); font-variant-numeric: tabular-nums; }
 
 /* ── Profile button ── */
 .profile-btn { display: flex; align-items: center; gap: 6px; background: var(--p-color-bg-surface); border: 1px solid var(--p-color-border); border-radius: var(--p-border-radius-full); padding: 5px 12px 5px 8px; cursor: pointer; transition: border-color 0.12s, box-shadow 0.12s; color: var(--p-color-text-secondary); }
