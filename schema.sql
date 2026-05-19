@@ -11,6 +11,7 @@ create table if not exists wantlist_state (
 alter table wantlist_state enable row level security;
 
 drop policy if exists "allow all" on wantlist_state;
+drop policy if exists "users own their data" on wantlist_state;
 
 create policy "users own their data"
   on wantlist_state for all
