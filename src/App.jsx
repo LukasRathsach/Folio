@@ -916,8 +916,7 @@ export default function App() {
     setLoading(true);
     loadFromSupabase(user.id).then((data) => {
       skipSaveRef.current = true; // don't immediately save what we just loaded
-      if (data && data.length > 0) setSets(data);
-      else setSets(INIT);
+      setSets(Array.isArray(data) && data.length > 0 ? data : INIT);
       setLoading(false);
     });
   }, [user?.id]);

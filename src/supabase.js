@@ -13,7 +13,18 @@ export async function loadFromSupabase(userId) {
     .select("sets")
     .eq("id", userId)
     .single();
-  if (error || !data) return null;
+  
+  // If no data exists, initialize empty row for new user
+  if (error || !data) {
+    try {
+      await supabase
+        .from("wantlist_state")
+        .insert({ id: userId, sets: [] });
+    } catch {
+      // Row might already exist from concurrent insert, that's fine
+    }
+    return [];
+  }
   return data.sets;
 }
 
