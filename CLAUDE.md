@@ -93,6 +93,8 @@ Returnerer `cardmarket.prices.trendPrice` — ingen Anthropic API nødvendig.
 Tabel: `wantlist_state` — én JSON-blob per bruger (`id = auth.uid()::text`).
 RLS: brugere kan kun læse/skrive deres egne rækker.
 
+Auth er obligatorisk i alle miljøer, også lokalt. Appen må ikke tilbyde offline/local-only mode uden login, og ændringer skal gemmes i Supabase `wantlist_state`. localStorage må kun bruges som efter-succes cache/backup, aldrig som primær kilde eller fallback for ikke-loggede brugere.
+
 ## Lokal opsætning
 
 ```bash

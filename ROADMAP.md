@@ -1,5 +1,16 @@
 # Folio — Roadmap
 
+## Product principle
+
+Folio wins or loses on two things:
+
+1. **Find the right card fast** — search is the core product.
+2. **Never lose a collection** — Supabase sync must be boringly reliable.
+
+Do not add broad new features until those two are solid.
+
+---
+
 ## Done (v0.1)
 
 - Core wantlist: add/remove illustrator folders and cards manually
@@ -12,95 +23,152 @@
 - Interest + price rating (1–5 stars) per illustrator
 - Owned toggle per card
 - CSV + JSON export
-- localStorage backup + Supabase sync (debounced, per-user)
-- Email/password auth via Supabase (login, signup, sign-out)
-- Profile panel (collection stats, sign out)
-- **Portfolio tab** — owned cards in a gallery view grouped by illustrator
-- **Toast notifications** — errors and save failures surfaced to the user
+- Mandatory Supabase auth + sync
+- Profile panel with collection stats and sign out
+- Portfolio tab — owned cards in a gallery view grouped by illustrator
+- Toast notifications — errors and save failures surfaced to the user
+- Vercel Analytics
 
 ---
 
-## v0.2 — Full Card Database (next sprint)
+## Short Term — Database, Search, Sync
 
-The single biggest gap: pokemontcg.io doesn't have every card, and API calls add latency.
-The fix is to mirror all special rarity cards into a Supabase `cards` table.
+Goal: Folio should have a near-complete local card database, excellent search, and collection sync you can trust.
 
-### Multi-source strategy (priority order)
+### 1. Card database coverage
 
-1. **Supabase `cards` table** (cached, fast, ~5 000 cards) — primary source after seeding
-2. **pokemontcg.io** — fallback for cards not yet in cache, and source for seeding
-3. **TCGdex** (`api.tcgdex.net`) — fallback for cards not in pokemontcg.io (different set coverage)
+- [x] `cards` table in Supabase with trigram full-text search (`pg_trgm`)
+- [x] `scripts/seed-cards.js` — seed special rarity cards from pokemontcg.io
+- [ ] Expand database schema for better categorisation:
+  - normalized rarity group (`SIR`, `IR`, `SR`, `HR`, `UR`, etc.)
+  - illustrator search key
+  - set series / set id / set name / release date
+  - national dex number when available
+  - source metadata (`pokemontcg`, `tcgdex`, manual override)
+- [ ] Seed from multiple sources:
+  - pokemontcg.io as primary source
+  - TCGdex as coverage fallback
+  - manual override/import path for missing important cards
+- [ ] Add database quality checks:
+  - duplicate detection by name + set + number
+  - missing image/artist/rarity report
+  - coverage count by rarity and set
 
-### What to build
+### 2. Search is everything
 
-- [ ] `cards` table in Supabase with trigram full-text search (`pg_trgm`)
-- [ ] `scripts/seed-cards.js` — one-off Node script that pulls all special rarity cards from pokemontcg.io and upserts to Supabase (needs `SUPABASE_SERVICE_ROLE_KEY`)
-- [ ] Update search to hit Supabase first, fall back to pokemontcg.io
-- [ ] TCGdex fallback for cards not found in either source
-- [ ] Weekly price refresh (Supabase Edge Function cron)
+- [ ] Update app search to hit Supabase first, then external fallback
+- [ ] Support fast search by:
+  - card name
+  - illustrator
+  - set name
+  - rarity group
+  - card number / set number where available
+- [ ] Improve ranking:
+  - exact name matches first
+  - illustrator exact matches next
+  - newer sets before older sets when relevance is tied
+  - SIR/IR priority for ambiguous searches
+- [ ] Raise search quality substantially:
+  - normalize illustrator names so recommendations are accurate
+  - handle aliases, accents, punctuation, casing, and multi-word names
+  - support fuzzy matching for small typos without polluting top results
+  - make set-aware queries work, e.g. `151 pikachu`, `mew sar`, `charizard obsidian`
+  - separate broad search from exact recommendation logic
+- [ ] Make recommendations much more accurate:
+  - “same illustrator” must be based on normalized exact artist identity, not loose text matching
+  - recommended cards should exclude already-added cards clearly
+  - sort recommendations by rarity priority, then release date, then set order
+  - show why a recommendation matched when useful, e.g. same illustrator / same set
+- [ ] Add a search-quality test set:
+  - common card-name searches with expected top results
+  - illustrator searches with expected artist matches
+  - typo/partial queries that should still work
+  - regression checks for known tricky illustrators
+- [ ] Add “same illustrator” exploration from every card result
+- [ ] Add master set / set-level browsing once search quality is solid
 
-Schema addition:
-```sql
-create extension if not exists pg_trgm;
+### 3. Sync and collection safety
 
-create table if not exists cards (
-  id            text primary key,
-  name          text not null,
-  rarity        text,
-  artist        text,
-  set_id        text,
-  set_name      text,
-  image_small   text,
-  image_large   text,
-  cm_price      numeric(10,2),
-  cm_url        text,
-  synced_at     timestamptz default now()
-);
-
-create index if not exists cards_name_trgm   on cards using gin (name   gin_trgm_ops);
-create index if not exists cards_artist_trgm on cards using gin (artist gin_trgm_ops);
-create index if not exists cards_rarity      on cards (rarity);
-
-alter table cards enable row level security;
-create policy "cards readable by authenticated" on cards for select to authenticated using (true);
-```
+- [x] Auth required in every environment, including local dev
+- [x] localStorage is backup-only after successful Supabase save
+- [x] Save errors surface to the user
+- [ ] Make sync state stronger:
+  - explicit dirty state for unsaved local changes
+  - block signout when latest save failed
+  - retry failed saves
+  - show last successful sync time
+- [ ] Add `updated_at` trigger in Postgres instead of client-side timestamps
+- [ ] Add export/backup safety button after the sync flow is stable
+- [ ] Add basic recovery story: import JSON into authenticated account
 
 ---
 
-## v0.3 — Prices & Tracking
+## Mid Term — Mobile-First Core UX
 
-- [ ] **Bulk price refresh** — re-fetch Cardmarket prices for all wantlist cards in one click
-- [ ] **Price history** — store daily snapshots, show sparkline per card
-- [ ] **Price alerts** — flag cards that changed >X% since added
-- [ ] **Set completion** — % of SIR/IR owned vs. total available per expansion
-- [ ] **Card condition** field (NM / LP / MP / HP / DMG)
-- [ ] **DKK as default** user preference (stored in Supabase profile row)
+Goal: remove clutter, make the app feel focused, and make the core card-finding workflows easy on a phone.
+
+### 1. Remove before adding
+
+- [ ] Audit every visible control and remove anything that does not support:
+  - finding cards
+  - adding cards
+  - marking owned
+  - exploring illustrator/set relationships
+  - safe sync/account state
+- [ ] Collapse or hide secondary metadata until needed
+- [ ] Simplify ratings if they are not actively useful
+- [ ] Keep Portfolio only if it helps collection review; otherwise fold into owned filters
+
+### 2. Mobile-first navigation
+
+- [ ] Rework layout around mobile:
+  - bottom nav or compact tab switcher
+  - search as the primary first-screen action
+  - larger touch targets
+  - less dense card rows
+- [ ] Make add-card flow fast from search results
+- [ ] Make owned toggle obvious and thumb-friendly
+
+### 3. Core exploration workflows
+
+- [ ] “More by this illustrator” as a first-class flow
+- [ ] Set/master set view:
+  - show all relevant special-rarity cards in a set
+  - mark owned/wanted/missing
+  - filter by rarity
+- [ ] Better missing-cards workflow:
+  - cards from same illustrator not yet added
+  - cards from same set not yet owned
 
 ---
 
-## v0.4 — UX & Social
+## Long Term — To Decide Later
 
-- [ ] **Public portfolio link** — read-only shareable URL
-- [ ] **"Missing from set" view** — SIR/IR not yet in wantlist for a given expansion
-- [ ] **Trade list** — mark cards as available for trade
-- [ ] **Improved mobile layout** — bottom nav, larger touch targets
-- [ ] **PWA** — offline support, installable
+Hold these until short-term reliability and mid-term UX are strong.
+
+- [ ] Public portfolio/share link
+- [ ] Trade list
+- [ ] Price history and alerts
+- [ ] Weekly automated price refresh
+- [ ] PWA/offline install support
+- [ ] Social or collection comparison features
 
 ---
 
-## Architecture notes (senior backend / security)
+## Architecture notes
 
-**Security (current state ✓)**
+**Security**
 - Supabase anon key in client is correct — RLS policies enforce row-level isolation
 - `wantlist_state` rows protected by `id = auth.uid()::text`
+- Auth is mandatory in every environment
 - No secrets in git (`.env` gitignored)
 
-**What to harden before public launch**
-- Add `updated_at` trigger in Postgres instead of setting it client-side (prevents clock skew)
-- Rate-limit auth attempts (Supabase dashboard → Auth → Rate Limits)
-- Set Supabase `Site URL` + `Redirect URLs` to only allow the Vercel domain
+**Database**
+- `wantlist_state` is still a JSON blob per user for collection state
+- `cards` is the local searchable catalog
+- Next likely schema step: keep `cards` as shared catalog, then later normalize user-owned/wanted items only if the JSON blob becomes painful
 
 **Performance**
-- Current single JSON blob (max ~500 cards) is fast enough for personal use
-- Once friends use it: switch to the normalized `cards` + `wantlist_items` schema (v0.2)
-- All saves are debounced 1 500ms — no risk of write storms
+- Search should move to Supabase first to avoid slow external API calls
+- External APIs should become seed/fallback sources, not primary UX dependencies
+- Saves are debounced 1 500ms, but need stronger retry/dirty-state handling

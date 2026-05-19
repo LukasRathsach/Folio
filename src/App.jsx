@@ -10,13 +10,18 @@ const SAVE_DEBOUNCE_MS = 1500;
 const SPECIAL_RARITIES = [
   "Special Illustration Rare",
   "Illustration Rare",
+  "Special Art Rare",
+  "Art Rare",
   "Secret Rare",
+  "Rare Secret",
   "Hyper Rare",
   "Rainbow Rare",
+  "Rare Rainbow",
   "Amazing Rare",
   "Radiant Rare",
   "ACE SPEC Rare",
   "Ultra Rare",
+  "Rare Ultra",
   "Double Rare",
   "Shiny Rare",
   "Shiny Ultra Rare",
@@ -28,9 +33,9 @@ function rarityFilter(type) {
   return `(${SPECIAL_RARITIES})`;
 }
 
-async function fetchCards(q) {
+async function fetchCards(q, pageSize = 50) {
   const res = await fetch(
-    `https://api.pokemontcg.io/v2/cards?q=${encodeURIComponent(q)}&select=id,name,images,set,artist,cardmarket,rarity&orderBy=-set.releaseDate&pageSize=50`
+    `https://api.pokemontcg.io/v2/cards?q=${encodeURIComponent(q)}&select=id,name,images,set,artist,cardmarket,rarity&orderBy=-set.releaseDate&pageSize=${pageSize}`
   );
   if (!res.ok) throw new Error("TCG API fejlede");
   return (await res.json()).data || [];
@@ -63,7 +68,7 @@ async function fetchArtistCards(artistName) {
   const words = artistName.trim().split(/\s+/).filter(Boolean);
   if (!words.length) return [];
   const primary = [...words].sort((a, b) => b.length - a.length)[0];
-  const cards = await fetchCards(`artist:${primary}* (${SPECIAL_RARITIES})`);
+  const cards = await fetchCards(`artist:${primary}* (${SPECIAL_RARITIES})`, 250);
   return cards
     .filter((c) => {
       const a = (c.artist || "").toLowerCase();
@@ -80,18 +85,23 @@ function extractPrice(tcgCard) {
 }
 
 const RARITY_ORDER = {
-  "Special Illustration Rare": 0,
-  "Illustration Rare": 1,
-  "Hyper Rare": 2,
-  "Secret Rare": 3,
-  "Rainbow Rare": 4,
-  "Amazing Rare": 5,
-  "Radiant Rare": 6,
-  "ACE SPEC Rare": 7,
-  "Ultra Rare": 8,
-  "Double Rare": 9,
-  "Shiny Ultra Rare": 10,
-  "Shiny Rare": 11,
+    "Special Illustration Rare": 0,
+    "Illustration Rare": 1,
+    "Special Art Rare": 2,
+    "Art Rare": 3,
+    "Hyper Rare": 4,
+    "Secret Rare": 5,
+    "Rare Secret": 6,
+    "Rainbow Rare": 7,
+    "Rare Rainbow": 8,
+    "Amazing Rare": 9,
+    "Radiant Rare": 10,
+    "ACE SPEC Rare": 11,
+    "Ultra Rare": 12,
+    "Rare Ultra": 13,
+    "Double Rare": 14,
+    "Shiny Ultra Rare": 15,
+    "Shiny Rare": 16,
 };
 function raritySort(a, b) {
   return (RARITY_ORDER[a.rarity] ?? 99) - (RARITY_ORDER[b.rarity] ?? 99);
@@ -101,13 +111,18 @@ function cardTypeFromRarity(rarity) {
   const map = {
     "Special Illustration Rare": "SIR",
     "Illustration Rare": "IR",
+    "Special Art Rare": "SIR",
+    "Art Rare": "IR",
     "Hyper Rare": "HR",
     "Secret Rare": "SR",
+    "Rare Secret": "SR",
     "Rainbow Rare": "RR",
+    "Rare Rainbow": "RR",
     "Amazing Rare": "AR",
     "Radiant Rare": "RAD",
     "ACE SPEC Rare": "ACE",
     "Ultra Rare": "UR",
+    "Rare Ultra": "UR",
     "Double Rare": "RR",
     "Shiny Ultra Rare": "SUR",
     "Shiny Rare": "SHY",
@@ -118,8 +133,8 @@ function cardTypeFromRarity(rarity) {
 function rarityBadgeClass(rarity) {
   if (rarity === "Special Illustration Rare") return "sir";
   if (rarity === "Illustration Rare") return "ir";
-  if (rarity === "Hyper Rare" || rarity === "Rainbow Rare" || rarity === "Shiny Ultra Rare") return "hr";
-  if (rarity === "Secret Rare" || rarity === "Ultra Rare") return "sr";
+  if (rarity === "Hyper Rare" || rarity === "Rainbow Rare" || rarity === "Rare Rainbow" || rarity === "Shiny Ultra Rare") return "hr";
+  if (rarity === "Secret Rare" || rarity === "Rare Secret" || rarity === "Ultra Rare" || rarity === "Rare Ultra") return "sr";
   return "other";
 }
 
@@ -142,13 +157,6 @@ function exportCSV(sets) {
   ])));
   const csv = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
   triggerDownload(new Blob([csv], { type: "text/csv;charset=utf-8;" }), "folio.csv");
-}
-
-// ─── localStorage ─────────────────────────────────────────────────────────────
-
-function loadLocalState() {
-  try { const r = localStorage.getItem(LS_KEY); return r ? JSON.parse(r) : null; }
-  catch { return null; }
 }
 
 // ─── Star Rating ─────────────────────────────────────────────────────────────
@@ -621,19 +629,6 @@ function IllusCard({ set, onUpdate, onDelete, onAddCard }) {
   );
 }
 
-// ─── Sync badge ───────────────────────────────────────────────────────────────
-
-function SyncBadge({ status }) {
-  if (!supabase) return null;
-  const map = { idle: ["#6d7175","Synkroniseret"], saving: ["#916a00","Gemmer…"], saved: ["#008060","Gemt"], error: ["#d82c0d","Fejl"] };
-  const [color, label] = map[status] || map.idle;
-  return (
-    <span className="sync-badge" style={{ color }}>
-      <span className="sync-dot" style={{ background: color }} />{label}
-    </span>
-  );
-}
-
 // ─── Toast system ─────────────────────────────────────────────────────────────
 
 function ToastStack({ toasts }) {
@@ -776,7 +771,7 @@ function ProfilePanel({ user, sets, onClose, onSignOut }) {
             ))}
           </div>
           <button className="btn-primary" style={{ width: "100%", justifyContent: "center", padding: "10px", background: "var(--p-color-critical)" }}
-            onClick={() => { onSignOut(); onClose(); }}>Log ud</button>
+            onClick={async () => { await onSignOut(); onClose(); }}>Log ud</button>
         </div>
       </div>
     </div>
@@ -860,6 +855,22 @@ function AuthScreen() {
   );
 }
 
+function SupabaseConfigError() {
+  return (
+    <div className="auth-center">
+      <div className="auth-box">
+        <h1 style={{ fontSize: 20, fontWeight: 600, marginBottom: 4 }}>Folio</h1>
+        <p style={{ fontSize: 13, color: "var(--p-color-critical)", marginBottom: "var(--p-space-3)" }}>
+          Supabase mangler i miljøvariablerne.
+        </p>
+        <p style={{ color: "var(--p-color-text-secondary)", fontSize: 13 }}>
+          Sæt <strong>VITE_SUPABASE_URL</strong> og <strong>VITE_SUPABASE_ANON_KEY</strong> for at bruge appen.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 const INIT = [{ id: 1, illustrator: "", cards: [], want: 3, priceRating: 0 }];
@@ -867,10 +878,10 @@ const INIT = [{ id: 1, illustrator: "", cards: [], want: 3, priceRating: 0 }];
 export default function App() {
   const { toasts, add: addToast }   = useToasts();
   const [user, setUser]             = useState(null);
-  const [authChecked, setAuthChecked] = useState(!supabase);
+  const [authChecked, setAuthChecked] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [activeTab, setActiveTab]   = useState("wantlist");
-  const [sets, setSets]             = useState(() => loadLocalState() ?? INIT);
+  const [sets, setSets]             = useState(INIT);
   const [sort, setSort]             = useState("want");
   const [dir, setDir]               = useState("desc");
   const [filter, setFilter]         = useState("all");
@@ -881,7 +892,10 @@ export default function App() {
 
   // ── Auth listener ──────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!supabase) return;
+    if (!supabase) {
+      setAuthChecked(true);
+      return;
+    }
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
       setAuthChecked(true);
@@ -896,14 +910,14 @@ export default function App() {
   useEffect(() => {
     clearTimeout(saveTimer.current);
     if (!user) {
-      setSets(loadLocalState() ?? INIT); // reset to local cache / blank on sign-out
+      setSets(INIT);
       return;
     }
     setLoading(true);
     loadFromSupabase(user.id).then((data) => {
       skipSaveRef.current = true; // don't immediately save what we just loaded
       if (data && data.length > 0) setSets(data);
-      else setSets(loadLocalState() ?? INIT);
+      else setSets(INIT);
       setLoading(false);
     });
   }, [user?.id]);
@@ -911,16 +925,16 @@ export default function App() {
   useEffect(() => {
     if (loading) return;
     if (skipSaveRef.current) { skipSaveRef.current = false; return; }
-    try { localStorage.setItem(LS_KEY, JSON.stringify(sets)); } catch {}
     if (!supabase || !user) return;
     setSyncStatus("saving");
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       try {
         await saveToSupabase(user.id, sets);
+        try { localStorage.setItem(LS_KEY, JSON.stringify(sets)); } catch {}
         setSyncStatus("saved");
         setTimeout(() => setSyncStatus("idle"), 2000);
-      } catch { setSyncStatus("error"); addToast("Kunne ikke gemme til Supabase — data er gemt lokalt", "error"); }
+      } catch { setSyncStatus("error"); addToast("Kunne ikke synkronisere til Supabase. Ændringen er ikke gemt i databasen.", "error"); }
     }, SAVE_DEBOUNCE_MS);
   }, [sets, loading]);
   const upd = (id, next) => setSets((s) => s.map((x) => (x.id === id ? next : x)));
@@ -962,6 +976,22 @@ export default function App() {
 
   const grand = useMemo(() => sorted.reduce((a, s) => a + s._total, 0), [sorted]);
 
+  const signOut = useCallback(async () => {
+    if (!supabase || !user) return;
+    clearTimeout(saveTimer.current);
+    try {
+      setSyncStatus("saving");
+      await saveToSupabase(user.id, sets);
+      try { localStorage.setItem(LS_KEY, JSON.stringify(sets)); } catch {}
+      setSyncStatus("saved");
+    } catch {
+      setSyncStatus("error");
+      addToast("Kunne ikke synkronisere til Supabase. Du er stadig logget ind.", "error");
+      return;
+    }
+    await supabase.auth.signOut();
+  }, [user, sets, addToast]);
+
   if (!authChecked) return (
     <>
       <style>{CSS}</style>
@@ -971,7 +1001,9 @@ export default function App() {
     </>
   );
 
-  if (supabase && !user) return <><style>{CSS}</style><AuthScreen /></>;
+  if (!supabase) return <><style>{CSS}</style><SupabaseConfigError /></>;
+
+  if (!user) return <><style>{CSS}</style><AuthScreen /></>;
 
   if (loading) return (
     <>
@@ -993,15 +1025,16 @@ export default function App() {
           <div className="page-header-inner">
             <div>
               <h1 className="page-title">Folio</h1>
-              <p className="page-sub">SIR · IR kort sorteret efter illustrator · priser fra Cardmarket via pokemontcg.io</p>
             </div>
             <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-              <SyncBadge status={syncStatus} />
               {user && (
-                <button className="profile-btn" onClick={() => setShowProfile(true)} title="Åbn profil">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
-                  <span className="profile-email">{user.email}</span>
-                </button>
+                <>
+                  <button className="profile-btn" onClick={() => setShowProfile(true)} title="Åbn profil">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+                    <span className="profile-email">{user.email}</span>
+                  </button>
+                  <button className="btn-secondary" onClick={signOut}>Log ud</button>
+                </>
               )}
             </div>
           </div>
@@ -1082,7 +1115,7 @@ export default function App() {
       {showProfile && user && (
         <ProfilePanel user={user} sets={sets}
           onClose={() => setShowProfile(false)}
-          onSignOut={() => supabase?.auth.signOut()} />
+          onSignOut={signOut} />
       )}
     </>
   );
@@ -1136,10 +1169,6 @@ button { cursor: pointer; }
 .page-header { margin-bottom: var(--p-space-4); }
 .page-header-inner { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--p-space-4); }
 .page-title { font-size: 20px; font-weight: 600; letter-spacing: -0.2px; }
-.page-sub { font-size: 13px; color: var(--p-color-text-secondary); margin-top: 2px; }
-.sync-badge { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; white-space: nowrap; padding-top: 4px; }
-.sync-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; transition: background 0.4s; }
-
 /* ── Search panel ── */
 .search-panel { background: var(--p-color-bg-surface); border: 1px solid var(--p-color-border);
   border-radius: var(--p-border-radius-2); padding: var(--p-space-4);
@@ -1196,6 +1225,8 @@ button { cursor: pointer; }
 .btn-primary { background: #404040; color: #fff; border: none; font-size: 13px; font-weight: 550; padding: 6px 14px; border-radius: var(--p-border-radius-1); transition: background 0.12s; display: inline-flex; align-items: center; gap: var(--p-space-1); }
 .btn-primary:hover { background: #303030; }
 .btn-primary.large { padding: 10px 20px; font-size: 14px; }
+.btn-secondary { background: var(--p-color-bg-surface); color: var(--p-color-text-secondary); border: 1px solid var(--p-color-border); font-size: 12px; font-weight: 550; padding: 5px 10px; border-radius: var(--p-border-radius-full); transition: border-color 0.12s, color 0.12s; }
+.btn-secondary:hover { border-color: var(--p-color-border-hover); color: var(--p-color-text); }
 .btn-plain { background: transparent; border: 1px solid var(--p-color-border); color: var(--p-color-text-secondary); font-size: 12px; font-weight: 500; padding: 4px 10px; border-radius: var(--p-border-radius-1); transition: all 0.12s; }
 .btn-plain:hover { border-color: var(--p-color-border-hover); color: var(--p-color-text); background: var(--p-color-bg-surface-hover); }
 .total-chip { background: var(--p-color-bg-fill-disabled); border: 1px solid var(--p-color-border); border-radius: var(--p-border-radius-1); padding: 4px 12px; display: flex; align-items: baseline; gap: 6px; }

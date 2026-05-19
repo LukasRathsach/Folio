@@ -18,8 +18,9 @@ export async function loadFromSupabase(userId) {
 }
 
 export async function saveToSupabase(userId, sets) {
-  if (!supabase || !userId) return;
-  await supabase
+  if (!supabase || !userId) throw new Error("Supabase auth is required");
+  const { error } = await supabase
     .from("wantlist_state")
     .upsert({ id: userId, sets, updated_at: new Date().toISOString() });
+  if (error) throw error;
 }

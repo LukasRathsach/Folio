@@ -4,13 +4,20 @@ Last updated: 2026-05-19
 
 ## What this project is
 
-**Folio** is a personal Pokémon TCG collection tracker. Users add illustrator folders, search for cards by name or artist, and track prices, ownership, and interest ratings. Data syncs to Supabase per-user; works offline via localStorage fallback.
+**Folio** is a personal Pokémon TCG collection tracker. Users add illustrator folders, search for cards by name or artist, and track prices, ownership, and interest ratings. Auth is required in every environment, including local dev, and data syncs to Supabase per-user.
 
 Live at Vercel. Single-file React app (`src/App.jsx`).
 
 ---
 
 ## Roadmap status
+
+Current product focus:
+1. **Short term:** database coverage, search quality, and backend sync safety.
+2. **Mid term:** mobile-first UX cleanup around the core workflows.
+3. **Long term:** defer social, price-history, PWA, and sharing features until the basics are excellent.
+
+Search is the core product surface. Supabase sync is the trust foundation. Do not prioritize new features ahead of those.
 
 ### Done (v0.1) — 2026-05-19
 - [x] Core wantlist: add/remove illustrator folders and cards manually
@@ -23,7 +30,7 @@ Live at Vercel. Single-file React app (`src/App.jsx`).
 - [x] Interest + price rating (1–5 stars) per illustrator
 - [x] Owned toggle per card
 - [x] CSV + JSON export
-- [x] localStorage backup + Supabase sync (debounced, per-user) — done 2026-05-19: 1500ms debounce, `skipSaveRef` prevents spurious write after load
+- [x] Mandatory Supabase sync (debounced, per-user) — done 2026-05-19: 1500ms debounce, `skipSaveRef` prevents spurious write after load; localStorage is only written after successful Supabase save
 - [x] Email/password auth via Supabase (login, signup, sign-out) — done 2026-05-19: `AuthScreen`, `onAuthStateChange` listener
 - [x] Profile panel (collection stats, sign out) — done 2026-05-19: `ProfilePanel` component
 - [x] Portfolio tab — owned cards in a gallery view grouped by illustrator — done 2026-05-19: `Portfolio` component, second tab
@@ -33,10 +40,9 @@ Live at Vercel. Single-file React app (`src/App.jsx`).
 
 ---
 
-## v0.2 — Full Card Database (next sprint)
+## Short Term — Database, Search, Sync
 
-The single biggest gap: pokemontcg.io doesn't have every card, and API calls add latency.
-Fix: mirror all special rarity cards into Supabase `cards` table.
+The active sprint should focus on a near-complete card catalog, strong categorisation, fast search, and trustworthy collection persistence.
 
 ### Multi-source strategy (priority order)
 1. **Supabase `cards` table** (cached, fast) — primary after seeding
@@ -44,31 +50,35 @@ Fix: mirror all special rarity cards into Supabase `cards` table.
 3. **TCGdex** (`api.tcgdex.net`) — fallback for cards not in pokemontcg.io
 
 ### Tasks
-- [ ] `cards` table in Supabase with trigram full-text search (`pg_trgm`) — schema in ROADMAP.md
-- [ ] `scripts/seed-cards.js` — Node script to pull all special rarity cards from pokemontcg.io and upsert to Supabase (needs `SUPABASE_SERVICE_ROLE_KEY`)
+- [x] `cards` table in Supabase with trigram full-text search (`pg_trgm`) — done 2026-05-19: added idempotent schema to `schema.sql`
+- [x] `scripts/seed-cards.js` — done 2026-05-19: pulls all special rarity cards from pokemontcg.io and upserts with `SUPABASE_SERVICE_ROLE_KEY`
+- [ ] Expand `cards` schema with normalized rarity group, illustrator key, set metadata, source metadata, and optional dex/card number fields
+- [ ] Seed/fill gaps from TCGdex and manual override/import path
+- [ ] Add database quality checks for duplicates, missing images/artists/rarities, and coverage by set/rarity
 - [ ] Update search to hit Supabase first, fall back to pokemontcg.io
-- [ ] TCGdex fallback for cards not found in either source
-- [ ] Weekly price refresh (Supabase Edge Function cron)
+- [ ] Improve search ranking: exact name, exact illustrator, newer set tie-breaker, SIR/IR priority
+- [ ] Raise search/recommendation quality: normalized artist identity, fuzzy matching, set-aware queries, accurate same-illustrator recommendations, and regression test queries
+- [ ] Add same-illustrator exploration from every card result
+- [ ] Strengthen sync: dirty state, retry failed saves, block signout on failed save, last successful sync time
 
 ---
 
-## v0.3 — Prices & Tracking
+## Mid Term — Mobile-First Core UX
 
-- [ ] Bulk price refresh — re-fetch Cardmarket prices for all wantlist cards in one click
-- [ ] Price history — store daily snapshots, show sparkline per card
-- [ ] Price alerts — flag cards that changed >X% since added
-- [ ] Set completion — % of SIR/IR owned vs. total available per expansion
-- [ ] Card condition field (NM / LP / MP / HP / DMG)
-- [ ] DKK as default user preference (stored in Supabase profile row)
+- [ ] Audit and remove UI that does not directly support finding cards, adding cards, marking owned, exploring illustrator/set relationships, or sync/account safety
+- [ ] Rework mobile layout around search-first usage, compact navigation, and larger touch targets
+- [ ] Make add-card and owned-toggle flows faster on phone
+- [ ] Promote “more by this illustrator” to a first-class workflow
+- [ ] Add set/master set browsing only after search quality is solid
 
 ---
 
-## v0.4 — UX & Social
+## Long Term — To Decide Later
 
 - [ ] Public portfolio link — read-only shareable URL
-- [ ] "Missing from set" view — SIR/IR not yet in wantlist for a given expansion
 - [ ] Trade list — mark cards as available for trade
-- [ ] Improved mobile layout — bottom nav, larger touch targets
+- [ ] Price history and alerts
+- [ ] Weekly price refresh (Supabase Edge Function cron)
 - [ ] PWA — offline support, installable
 
 ---
@@ -94,5 +104,6 @@ Fix: mirror all special rarity cards into Supabase `cards` table.
 
 - **Supabase "Signups not allowed"**: Dashboard → Authentication → Configuration → Enable Signups must be ON
 - **LS_KEY is `"folio-v1"`** (was `"tcg-wantlist-v1"` — old local data won't auto-migrate)
+- **Auth is mandatory in every environment**: local dev must sign up/login too. Do not reintroduce local-only fallback; changes must sync to Supabase `wantlist_state`.
 - `skipSaveRef` pattern: prevents spurious Supabase write right after loading user data — don't remove it
 - Artist recs only re-fetch when `illustrator` changes (not on card adds) — intentional to prevent reload loop
