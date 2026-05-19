@@ -1,21 +1,18 @@
 -- Run this in your Supabase SQL editor
--- Creates a single-row JSON store for the wantlist state
+-- Each row is one user's wantlist (id = auth user UUID)
 
 create table if not exists wantlist_state (
-  id text primary key default 'main',
+  id text primary key,
   sets jsonb not null default '[]'::jsonb,
   updated_at timestamptz default now()
 );
 
--- RLS: open policy (single-user personal tool, no auth)
+-- User-scoped RLS: each user can only read/write their own row
 alter table wantlist_state enable row level security;
 
-create policy "allow all"
-  on wantlist_state for all
-  using (true)
-  with check (true);
+drop policy if exists "allow all" on wantlist_state;
 
--- Seed the initial row so upsert always finds a target
-insert into wantlist_state (id, sets)
-values ('main', '[]')
-on conflict (id) do nothing;
+create policy "users own their data"
+  on wantlist_state for all
+  using (id = auth.uid()::text)
+  with check (id = auth.uid()::text);
