@@ -1,7 +1,9 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import { loadFromSupabase, saveToSupabase, supabase } from "./supabase.js";
 
 const DKK_RATE = 7.46;
 const LS_KEY = "tcg-wantlist-v1";
+const SAVE_DEBOUNCE_MS = 1500;
 
 // ─── API helpers ─────────────────────────────────────────────────────────────
 
@@ -91,12 +93,8 @@ function exportCSV(sets) {
   sets.forEach((s) => {
     s.cards.forEach((c) => {
       rows.push([
-        s.illustrator,
-        s.want,
-        c.type,
-        c.name,
-        c.tcgSetName || "",
-        c.price ?? "",
+        s.illustrator, s.want, c.type, c.name,
+        c.tcgSetName || "", c.price ?? "",
         c.price ? (c.price * DKK_RATE).toFixed(2) : "",
         c.owned ? "Ja" : "Nej",
         c.url || "",
@@ -111,7 +109,7 @@ function exportCSV(sets) {
 
 // ─── localStorage ─────────────────────────────────────────────────────────────
 
-function loadState() {
+function loadLocalState() {
   try {
     const raw = localStorage.getItem(LS_KEY);
     return raw ? JSON.parse(raw) : null;
@@ -132,6 +130,7 @@ function StarRating({ value, onChange }) {
           className={"star" + (s <= (hov ?? value) ? " on" : "")}
           onMouseEnter={() => setHov(s)}
           onClick={() => onChange(s)}
+          aria-label={`${s} stjerne${s !== 1 ? "r" : ""}`}
         >
           ★
         </button>
@@ -165,12 +164,18 @@ function SearchModal({ cardName, cardType, onSelect, onClose }) {
     if (cardName) doSearch(cardName);
   }, []);
 
+  useEffect(() => {
+    const handler = (e) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
   return (
-    <div className="overlay" onClick={onClose}>
+    <div className="overlay" onClick={onClose} role="dialog" aria-modal="true">
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <span className="modal-title">{cardType} SØGNING · pokemontcg.io</span>
-          <button className="x-btn" onClick={onClose}>✕</button>
+          <button className="x-btn" onClick={onClose} aria-label="Luk søgning">✕</button>
         </div>
         <div className="modal-bar">
           <input
@@ -180,6 +185,7 @@ function SearchModal({ cardName, cardType, onSelect, onClose }) {
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && doSearch(q)}
             placeholder="Fx Charizard ex, Pikachu, Eevee…"
+            aria-label="Søg kort"
           />
           <button className="modal-go" onClick={() => doSearch(q)}>Søg</button>
         </div>
@@ -237,12 +243,8 @@ function CardRow({ card, currency, onUpdate, onDelete, onArtistDetected }) {
     onUpdate({ ...next, loadingPrice: false, price: p.price, url: p.url });
   };
 
-  const displayPrice =
-    card.price != null
-      ? currency === "DKK"
-        ? (card.price * DKK_RATE).toFixed(2)
-        : card.price.toFixed(2)
-      : null;
+  const eurVal = card.price != null ? card.price.toFixed(2) : null;
+  const dkkVal = card.price != null ? (card.price * DKK_RATE).toFixed(2) : null;
 
   return (
     <>
@@ -250,7 +252,8 @@ function CardRow({ card, currency, onUpdate, onDelete, onArtistDetected }) {
         <button
           className="thumb-btn"
           onClick={() => setShowModal(true)}
-          title="Søg kort (TCG API + Cardmarket)"
+          title="Søg kort"
+          aria-label="Søg kort på pokemontcg.io"
         >
           {card.image ? (
             <img className="thumb" src={card.image} alt={card.name} />
@@ -263,6 +266,7 @@ function CardRow({ card, currency, onUpdate, onDelete, onArtistDetected }) {
           className="type-sel"
           value={card.type}
           onChange={(e) => onUpdate({ ...card, type: e.target.value })}
+          aria-label="Korttype"
         >
           <option>IR</option>
           <option>SIR</option>
@@ -273,14 +277,16 @@ function CardRow({ card, currency, onUpdate, onDelete, onArtistDetected }) {
           placeholder="Kortnavn…"
           value={card.name}
           onChange={(e) => onUpdate({ ...card, name: e.target.value })}
+          aria-label="Kortnavn"
         />
 
         <button
           className="srch-btn"
           onClick={() => setShowModal(true)}
           title="Hent billede + Cardmarket-pris"
+          aria-label="Søg"
         >
-          🔍
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
         </button>
 
         <div className="price-cell">
@@ -288,30 +294,36 @@ function CardRow({ card, currency, onUpdate, onDelete, onArtistDetected }) {
             <span className="spinning price-spin">⟳</span>
           ) : (
             <>
-              <input
-                className="price-in"
-                type="number"
-                placeholder="–"
-                value={card.price ?? ""}
-                onChange={(e) =>
-                  onUpdate({ ...card, price: parseFloat(e.target.value) || null })
-                }
-              />
-              <span className="curr">{currency === "DKK" ? "kr" : "€"}</span>
-              {displayPrice && currency === "DKK" && (
-                <span className="price-converted">{displayPrice}</span>
-              )}
-              {card.url && (
-                <a
-                  href={card.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="cm-link"
-                  title="Åbn på Cardmarket"
-                >
-                  ↗
-                </a>
-              )}
+              <div className="price-stack">
+                <div className="price-row-inner">
+                  <input
+                    className="price-in"
+                    type="number"
+                    placeholder="–"
+                    value={card.price ?? ""}
+                    onChange={(e) =>
+                      onUpdate({ ...card, price: parseFloat(e.target.value) || null })
+                    }
+                    aria-label="Pris i EUR"
+                  />
+                  <span className="curr">€</span>
+                  {card.url && (
+                    <a
+                      href={card.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="cm-link"
+                      title="Åbn på Cardmarket"
+                      aria-label="Åbn på Cardmarket"
+                    >
+                      ↗
+                    </a>
+                  )}
+                </div>
+                {currency === "DKK" && dkkVal && (
+                  <div className="price-dkk">{dkkVal} kr</div>
+                )}
+              </div>
             </>
           )}
         </div>
@@ -320,11 +332,19 @@ function CardRow({ card, currency, onUpdate, onDelete, onArtistDetected }) {
           className={"own-btn" + (card.owned ? " owned-on" : "")}
           onClick={() => onUpdate({ ...card, owned: !card.owned })}
           title={card.owned ? "Ejer det — klik for at fjerne" : "Markér som ejet"}
+          aria-label={card.owned ? "Fjern ejet-markering" : "Markér som ejet"}
+          aria-pressed={card.owned}
         >
-          {card.owned ? "✓" : "○"}
+          {card.owned ? (
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          ) : (
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/></svg>
+          )}
         </button>
 
-        <button className="del" onClick={onDelete}>×</button>
+        <button className="del" onClick={onDelete} aria-label="Slet kort">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
       </div>
 
       {showModal && (
@@ -345,7 +365,9 @@ function IllusCard({ set, currency, onUpdate, onDelete }) {
   const hasLoading = set.cards.some((c) => c.loadingPrice);
   const total = set.cards.reduce((s, c) => s + (c.price || 0), 0);
   const displayTotal =
-    currency === "DKK" ? (total * DKK_RATE).toFixed(2) : total.toFixed(2);
+    currency === "DKK"
+      ? (total * DKK_RATE).toLocaleString("da-DK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : total.toLocaleString("da-DK", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const currSymbol = currency === "DKK" ? "kr" : "€";
 
   const updCard = (idx, next) =>
@@ -361,39 +383,64 @@ function IllusCard({ set, currency, onUpdate, onDelete }) {
       ],
     });
 
+  const ownedCount = set.cards.filter((c) => c.owned).length;
+
   return (
     <div className="icard">
       <div className="icard-head">
-        <div>
+        <div className="icard-head-left">
           <div className="icard-label">ILLUSTRATOR</div>
           <input
             className="icard-name"
             placeholder="Navn…"
             value={set.illustrator}
             onChange={(e) => onUpdate({ ...set, illustrator: e.target.value })}
+            aria-label="Illustratornavn"
           />
+          {set.cards.length > 0 && (
+            <div className="icard-meta">
+              <span className="meta-pill">{set.cards.length} kort</span>
+              {ownedCount > 0 && (
+                <span className="meta-pill owned-pill">{ownedCount} ejet</span>
+              )}
+            </div>
+          )}
         </div>
-        <button className="del" onClick={onDelete} style={{ alignSelf: "flex-start" }}>✕</button>
+        <button className="del-set" onClick={onDelete} aria-label="Slet illustrator-sæt">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
       </div>
 
       <div className="divider" />
 
-      <div className="cards-list">
-        {set.cards.map((c, i) => (
-          <CardRow
-            key={c.id}
-            card={c}
-            currency={currency}
-            onUpdate={(next) => updCard(i, next)}
-            onDelete={() => delCard(i)}
-            onArtistDetected={(artist) => {
-              if (!set.illustrator) onUpdate({ ...set, illustrator: artist });
-            }}
-          />
-        ))}
-      </div>
+      {set.cards.length === 0 ? (
+        <div className="empty-cards">
+          <span className="empty-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+          </span>
+          <span className="empty-text">Tilføj dit første kort</span>
+        </div>
+      ) : (
+        <div className="cards-list">
+          {set.cards.map((c, i) => (
+            <CardRow
+              key={c.id}
+              card={c}
+              currency={currency}
+              onUpdate={(next) => updCard(i, next)}
+              onDelete={() => delCard(i)}
+              onArtistDetected={(artist) => {
+                if (!set.illustrator) onUpdate({ ...set, illustrator: artist });
+              }}
+            />
+          ))}
+        </div>
+      )}
 
-      <button className="add-card" onClick={addCard}>+ Tilføj kort</button>
+      <button className="add-card" onClick={addCard}>
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Tilføj kort
+      </button>
 
       <div className="icard-foot">
         <div>
@@ -401,21 +448,31 @@ function IllusCard({ set, currency, onUpdate, onDelete }) {
           <StarRating value={set.want} onChange={(v) => onUpdate({ ...set, want: v })} />
         </div>
         <div style={{ textAlign: "right" }}>
-          <div className="icard-label">TOTAL ({currSymbol})</div>
+          <div className="icard-label">TOTAL</div>
           {hasLoading ? (
             <span className="spinning" style={{ fontSize: 22, color: "#e8b84b" }}>⟳</span>
           ) : (
-            <span className="total">
-              {parseFloat(displayTotal).toLocaleString("da-DK", {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2,
-              })}{" "}
-              {currSymbol}
-            </span>
+            <span className="total">{displayTotal} {currSymbol}</span>
           )}
         </div>
       </div>
     </div>
+  );
+}
+
+// ─── Sync status indicator ─────────────────────────────────────────────────────
+
+function SyncDot({ status }) {
+  if (!supabase) return null;
+  const map = {
+    idle: { color: "#3a3a4a", title: "Synkroniseret" },
+    saving: { color: "#e8b84b", title: "Gemmer…" },
+    saved: { color: "#4a9a5a", title: "Gemt til Supabase" },
+    error: { color: "#c0392b", title: "Synk fejlede" },
+  };
+  const { color, title } = map[status] || map.idle;
+  return (
+    <div className="sync-dot" style={{ background: color }} title={title} aria-label={title} />
   );
 }
 
@@ -424,17 +481,42 @@ function IllusCard({ set, currency, onUpdate, onDelete }) {
 const INIT = [{ id: 1, illustrator: "", cards: [], want: 3 }];
 
 export default function App() {
-  const [sets, setSets] = useState(() => loadState() ?? INIT);
+  const [sets, setSets] = useState(() => loadLocalState() ?? INIT);
   const [sort, setSort] = useState("want");
   const [dir, setDir] = useState("desc");
   const [filter, setFilter] = useState("all");
   const [currency, setCurrency] = useState("EUR");
+  const [syncStatus, setSyncStatus] = useState("idle");
+  const [loading, setLoading] = useState(!!supabase);
+  const saveTimer = useRef(null);
 
+  // Load from Supabase on mount (overrides localStorage if available)
   useEffect(() => {
-    try {
-      localStorage.setItem(LS_KEY, JSON.stringify(sets));
-    } catch {}
-  }, [sets]);
+    if (!supabase) return;
+    loadFromSupabase().then((data) => {
+      if (data && data.length > 0) setSets(data);
+      setLoading(false);
+    });
+  }, []);
+
+  // Sync: localStorage immediately, Supabase debounced
+  useEffect(() => {
+    if (loading) return;
+    try { localStorage.setItem(LS_KEY, JSON.stringify(sets)); } catch {}
+
+    if (!supabase) return;
+    setSyncStatus("saving");
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      try {
+        await saveToSupabase(sets);
+        setSyncStatus("saved");
+        setTimeout(() => setSyncStatus("idle"), 2000);
+      } catch {
+        setSyncStatus("error");
+      }
+    }, SAVE_DEBOUNCE_MS);
+  }, [sets, loading]);
 
   const upd = (id, next) => setSets((s) => s.map((x) => (x.id === id ? next : x)));
   const del = (id) => setSets((s) => s.filter((x) => x.id !== id));
@@ -460,8 +542,24 @@ export default function App() {
 
   const grand = useMemo(() => sorted.reduce((a, s) => a + s._total, 0), [sorted]);
   const grandDisplay =
-    currency === "DKK" ? (grand * DKK_RATE).toFixed(2) : grand.toFixed(2);
+    currency === "DKK"
+      ? (grand * DKK_RATE).toLocaleString("da-DK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : grand.toLocaleString("da-DK", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const currSymbol = currency === "DKK" ? "kr" : "€";
+
+  if (loading) {
+    return (
+      <>
+        <style>{CSS}</style>
+        <div className="app" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+          <div style={{ textAlign: "center" }}>
+            <span className="spinning" style={{ fontSize: 32, color: "#e8b84b" }}>⟳</span>
+            <p style={{ marginTop: 16, color: "#5a5870", fontSize: 12, letterSpacing: 2 }}>HENTER FRA SUPABASE</p>
+          </div>
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
@@ -471,6 +569,8 @@ export default function App() {
           <div className="logo-row">
             <span className="logo">TCG <em>WANTLIST</em></span>
             <span className="pill">SIR · IR</span>
+            <div style={{ flex: 1 }} />
+            <SyncDot status={syncStatus} />
           </div>
           <p className="sub">
             Billeder via pokemontcg.io · Priser fra Cardmarket (engelske kort, ikke UK)
@@ -478,48 +578,61 @@ export default function App() {
         </div>
 
         <div className="controls">
-          <span className="ctrl-lbl">SORTER</span>
-          {["want", "price"].map((k) => (
-            <button
-              key={k}
-              className={"ctrl" + (sort === k ? " active" : "")}
-              onClick={() => toggleSort(k)}
-            >
-              {k === "want" ? "Interesse" : "Pris"}
-              {sort === k && <span className="arr">{dir === "desc" ? " ↓" : " ↑"}</span>}
-            </button>
-          ))}
-          <span className="ctrl-lbl" style={{ marginLeft: 12 }}>VIS</span>
-          {["all", "IR", "SIR"].map((f) => (
-            <button
-              key={f}
-              className={"ctrl" + (filter === f ? " active" : "")}
-              onClick={() => setFilter(f)}
-            >
-              {f === "all" ? "Alle" : f}
-            </button>
-          ))}
-          <span className="ctrl-lbl" style={{ marginLeft: 12 }}>VALUTA</span>
-          {["EUR", "DKK"].map((c) => (
-            <button
-              key={c}
-              className={"ctrl" + (currency === c ? " active" : "")}
-              onClick={() => setCurrency(c)}
-            >
-              {c}
-            </button>
-          ))}
+          <div className="ctrl-group">
+            <span className="ctrl-lbl">SORTER</span>
+            {["want", "price"].map((k) => (
+              <button
+                key={k}
+                className={"ctrl" + (sort === k ? " active" : "")}
+                onClick={() => toggleSort(k)}
+              >
+                {k === "want" ? "Interesse" : "Pris"}
+                {sort === k && <span className="arr">{dir === "desc" ? " ↓" : " ↑"}</span>}
+              </button>
+            ))}
+          </div>
+
+          <div className="ctrl-sep" />
+
+          <div className="ctrl-group">
+            <span className="ctrl-lbl">VIS</span>
+            {["all", "IR", "SIR"].map((f) => (
+              <button
+                key={f}
+                className={"ctrl" + (filter === f ? " active" : "")}
+                onClick={() => setFilter(f)}
+              >
+                {f === "all" ? "Alle" : f}
+              </button>
+            ))}
+          </div>
+
+          <div className="ctrl-sep" />
+
+          <div className="ctrl-group">
+            <span className="ctrl-lbl">VALUTA</span>
+            {["EUR", "DKK"].map((c) => (
+              <button
+                key={c}
+                className={"ctrl" + (currency === c ? " active" : "")}
+                onClick={() => setCurrency(c)}
+              >
+                {c}
+              </button>
+            ))}
+          </div>
+
           <div style={{ flex: 1 }} />
-          <button className="export-btn" onClick={() => exportCSV(sets)} title="Eksporter til CSV">CSV</button>
-          <button className="export-btn" onClick={() => exportJSON(sets)} title="Eksporter til JSON">JSON</button>
+
+          <div className="ctrl-group">
+            <button className="export-btn" onClick={() => exportCSV(sets)} title="Eksporter til CSV">CSV</button>
+            <button className="export-btn" onClick={() => exportJSON(sets)} title="Eksporter til JSON">JSON</button>
+          </div>
+
+          <div className="ctrl-sep" />
+
           <span className="ctrl-lbl">TOTAL</span>
-          <span className="grand">
-            {parseFloat(grandDisplay).toLocaleString("da-DK", {
-              minimumFractionDigits: 2,
-              maximumFractionDigits: 2,
-            })}{" "}
-            {currSymbol}
-          </span>
+          <span className="grand">{grandDisplay} {currSymbol}</span>
         </div>
 
         <div className="grid">
@@ -535,7 +648,10 @@ export default function App() {
         </div>
 
         <div className="add-wrap">
-          <button className="add-set" onClick={add}>+ Tilføj illustrator</button>
+          <button className="add-set" onClick={add}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Tilføj illustrator
+          </button>
         </div>
       </div>
     </>
@@ -545,114 +661,334 @@ export default function App() {
 // ─── CSS ──────────────────────────────────────────────────────────────────────
 
 const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@300;400;500;600&display=swap');
+
+:root {
+  --gold: #e8b84b;
+  --gold-dim: rgba(232,184,75,0.15);
+  --gold-border: rgba(232,184,75,0.25);
+  --gold-glow: rgba(232,184,75,0.08);
+  --bg: #080809;
+  --bg-card: rgba(255,255,255,0.028);
+  --bg-elevated: rgba(255,255,255,0.05);
+  --border: rgba(255,255,255,0.07);
+  --border-hover: rgba(255,255,255,0.12);
+  --text: #edeaf5;
+  --text-muted: #6a6880;
+  --text-dim: #383848;
+  --green: #4a9a5a;
+  --green-dim: rgba(74,154,90,0.15);
+  --red: #c0392b;
+  --ease: cubic-bezier(0.16,1,0.3,1);
+  --radius: 12px;
+  --radius-sm: 6px;
+}
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: #0d0d0f; color: #e8e4df; font-family: 'DM Sans', sans-serif; min-height: 100vh; }
+body {
+  background: var(--bg);
+  background-image: radial-gradient(ellipse 80% 50% at 50% -10%, rgba(232,184,75,0.04) 0%, transparent 70%);
+  color: var(--text);
+  font-family: 'Inter', sans-serif;
+  min-height: 100vh;
+}
 
-.app { max-width: 920px; margin: 0 auto; padding: 48px 24px 80px; }
+button, select, input { font-family: inherit; }
+button { cursor: pointer; }
 
-.header { margin-bottom: 40px; }
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.14); }
+
+.app { max-width: 960px; margin: 0 auto; padding: 52px 24px 100px; }
+
+/* ── Header ── */
+.header { margin-bottom: 44px; }
 .logo-row { display: flex; align-items: flex-end; gap: 14px; margin-bottom: 6px; }
-.logo { font-family: 'Bebas Neue', sans-serif; font-size: 50px; letter-spacing: 2px; line-height: 1; }
-.logo em { color: #e8b84b; font-style: normal; }
-.pill { font-family: 'Bebas Neue', sans-serif; font-size: 13px; letter-spacing: 3px; padding: 4px 10px; border: 1px solid #e8b84b44; color: #e8b84b; border-radius: 2px; margin-bottom: 8px; }
-.sub { font-size: 12px; color: #4a4855; font-weight: 300; letter-spacing: 0.3px; }
+.logo { font-family: 'Bebas Neue', sans-serif; font-size: 52px; letter-spacing: 2px; line-height: 1; }
+.logo em { color: var(--gold); font-style: normal; }
+.pill {
+  font-family: 'Bebas Neue', sans-serif; font-size: 12px; letter-spacing: 3px;
+  padding: 4px 10px; border: 1px solid var(--gold-border); color: var(--gold);
+  border-radius: 3px; margin-bottom: 10px; background: var(--gold-glow);
+}
+.sub { font-size: 12px; color: var(--text-dim); font-weight: 400; letter-spacing: 0.2px; }
 
-.controls { display: flex; align-items: center; gap: 8px; margin-bottom: 32px; flex-wrap: wrap; }
-.ctrl-lbl { font-size: 10px; letter-spacing: 2px; color: #363640; font-weight: 500; }
-.ctrl { background: #131318; border: 1px solid #202028; color: #5a5860; font-family: 'DM Sans', sans-serif; font-size: 11px; letter-spacing: 1px; padding: 5px 12px; border-radius: 3px; cursor: pointer; transition: all .15s; text-transform: uppercase; }
-.ctrl:hover { border-color: #e8b84b44; color: #e8e4df; }
-.ctrl.active { background: #e8b84b14; border-color: #e8b84b66; color: #e8b84b; }
-.arr { color: #e8b84b; }
-.grand { font-family: 'Bebas Neue', sans-serif; font-size: 22px; letter-spacing: 1px; color: #e8b84b; }
+/* ── Sync dot ── */
+.sync-dot {
+  width: 7px; height: 7px; border-radius: 50%; margin-bottom: 12px; flex-shrink: 0;
+  transition: background 0.5s var(--ease);
+}
 
-.export-btn { background: #131318; border: 1px solid #202028; color: #4a4858; font-family: 'DM Sans', sans-serif; font-size: 10px; letter-spacing: 2px; padding: 5px 10px; border-radius: 3px; cursor: pointer; transition: all .15s; text-transform: uppercase; }
-.export-btn:hover { border-color: #e8b84b44; color: #e8b84b; }
+/* ── Controls ── */
+.controls {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 32px;
+  flex-wrap: wrap; background: var(--bg-card);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 10px 14px;
+}
+.ctrl-group { display: flex; align-items: center; gap: 6px; }
+.ctrl-sep { width: 1px; height: 18px; background: var(--border); flex-shrink: 0; }
+.ctrl-lbl { font-size: 9px; letter-spacing: 2.5px; color: var(--text-dim); font-weight: 500; text-transform: uppercase; white-space: nowrap; }
+.ctrl {
+  background: transparent; border: 1px solid transparent; color: var(--text-muted);
+  font-size: 11px; letter-spacing: 0.5px; padding: 4px 10px;
+  border-radius: 5px; transition: all 0.15s var(--ease); text-transform: uppercase; font-weight: 500;
+}
+.ctrl:hover { border-color: var(--border-hover); color: var(--text); }
+.ctrl.active { background: var(--gold-dim); border-color: var(--gold-border); color: var(--gold); }
+.arr { color: var(--gold); }
+.grand { font-family: 'Bebas Neue', sans-serif; font-size: 22px; letter-spacing: 1px; color: var(--gold); }
 
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 16px; }
+.export-btn {
+  background: transparent; border: 1px solid var(--border); color: var(--text-muted);
+  font-size: 9px; letter-spacing: 2px; padding: 4px 9px; border-radius: 4px;
+  transition: all 0.15s var(--ease); font-weight: 500;
+}
+.export-btn:hover { border-color: var(--gold-border); color: var(--gold); background: var(--gold-glow); }
 
-.icard { background: #111114; border: 1px solid #1c1c22; border-radius: 8px; padding: 22px; display: flex; flex-direction: column; gap: 14px; transition: border-color .2s; }
-.icard:hover { border-color: #2a2a34; }
+/* ── Grid ── */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(440px, 1fr)); gap: 14px; }
+
+/* ── Illustrator Card ── */
+.icard {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 22px;
+  display: flex; flex-direction: column; gap: 16px;
+  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
+  position: relative;
+}
+.icard::before {
+  content: '';
+  position: absolute; inset: 0; border-radius: var(--radius);
+  background: linear-gradient(135deg, rgba(232,184,75,0.03) 0%, transparent 50%);
+  pointer-events: none; opacity: 0; transition: opacity 0.25s var(--ease);
+}
+.icard:hover { border-color: var(--border-hover); box-shadow: 0 0 0 1px rgba(232,184,75,0.06), 0 16px 48px rgba(0,0,0,0.3); }
+.icard:hover::before { opacity: 1; }
+
 .icard-head { display: flex; justify-content: space-between; align-items: flex-start; }
-.icard-label { font-size: 9px; letter-spacing: 3px; color: #2e2e38; font-weight: 500; margin-bottom: 3px; }
-.icard-name { background: transparent; border: none; outline: none; font-family: 'Bebas Neue', sans-serif; font-size: 26px; letter-spacing: 1px; color: #f0ede8; width: 280px; }
-.icard-name::placeholder { color: #22222a; }
-.divider { height: 1px; background: #18181e; }
-.cards-list { display: flex; flex-direction: column; gap: 8px; }
-.add-card { align-self: flex-start; background: none; border: 1px dashed #1c1c24; color: #383840; font-family: 'DM Sans', sans-serif; font-size: 11px; letter-spacing: 1px; padding: 5px 12px; border-radius: 3px; cursor: pointer; transition: all .15s; }
-.add-card:hover { border-color: #e8b84b44; color: #e8b84b; }
+.icard-head-left { display: flex; flex-direction: column; gap: 3px; }
+.icard-label { font-size: 9px; letter-spacing: 3px; color: var(--text-dim); font-weight: 500; text-transform: uppercase; }
+.icard-name {
+  background: transparent; border: none; outline: none;
+  font-family: 'Bebas Neue', sans-serif; font-size: 28px; letter-spacing: 1px;
+  color: var(--text); width: 300px;
+}
+.icard-name::placeholder { color: #222230; }
+.icard-meta { display: flex; gap: 6px; margin-top: 4px; }
+.meta-pill {
+  font-size: 10px; letter-spacing: 0.5px; color: var(--text-muted);
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  padding: 2px 8px; border-radius: 99px;
+}
+.owned-pill { color: var(--green); border-color: rgba(74,154,90,0.25); background: var(--green-dim); }
+
+.del-set {
+  background: none; border: 1px solid var(--border); color: var(--text-dim);
+  border-radius: var(--radius-sm); padding: 6px; line-height: 0;
+  transition: all 0.15s var(--ease); display: flex; align-items: center;
+}
+.del-set:hover { border-color: rgba(192,57,43,0.4); color: var(--red); background: rgba(192,57,43,0.08); }
+
+.divider { height: 1px; background: var(--border); }
+
+/* ── Empty state ── */
+.empty-cards {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  padding: 28px 0; color: var(--text-dim);
+}
+.empty-icon { opacity: 0.4; }
+.empty-text { font-size: 12px; letter-spacing: 1px; }
+
+/* ── Cards list ── */
+.cards-list { display: flex; flex-direction: column; gap: 4px; }
+
+/* ── Add card button ── */
+.add-card {
+  align-self: flex-start; background: none; border: 1px dashed rgba(255,255,255,0.08);
+  color: var(--text-dim); font-size: 11px; letter-spacing: 0.5px; font-weight: 500;
+  padding: 5px 12px; border-radius: 5px; transition: all 0.15s var(--ease);
+  display: flex; align-items: center; gap: 6px;
+}
+.add-card:hover { border-color: var(--gold-border); color: var(--gold); background: var(--gold-glow); }
+
+/* ── Card footer ── */
 .icard-foot { display: flex; justify-content: space-between; align-items: flex-end; padding-top: 4px; }
-.total { font-family: 'Bebas Neue', sans-serif; font-size: 28px; letter-spacing: 1px; color: #e8b84b; line-height: 1; }
+.total { font-family: 'Bebas Neue', sans-serif; font-size: 28px; letter-spacing: 1px; color: var(--gold); line-height: 1; }
 
+/* ── Stars ── */
 .stars { display: flex; gap: 2px; }
-.star { background: none; border: none; font-size: 20px; cursor: pointer; color: #22222e; transition: color .1s, transform .1s; padding: 0 1px; line-height: 1; }
-.star.on { color: #e8b84b; }
-.star:hover { transform: scale(1.15); }
+.star { background: none; border: none; font-size: 19px; cursor: pointer; color: var(--text-dim); transition: color 0.1s, transform 0.15s var(--ease); padding: 0 1px; line-height: 1; }
+.star.on { color: var(--gold); }
+.star:hover { transform: scale(1.2); }
 
-.card-row { display: flex; align-items: center; gap: 7px; padding: 4px 6px; border-radius: 5px; transition: background .15s; }
-.card-row.owned { background: #0d1a0f; }
+/* ── Card row ── */
+.card-row {
+  display: flex; align-items: center; gap: 7px;
+  padding: 5px 7px; border-radius: 8px;
+  transition: background 0.15s var(--ease);
+  border-left: 2px solid transparent;
+}
+.card-row:hover { background: rgba(255,255,255,0.025); }
+.card-row.owned { border-left-color: var(--green); background: rgba(74,154,90,0.06); }
 
-.thumb-btn { background: #0a0a0d; border: 1px solid #1c1c24; border-radius: 5px; cursor: pointer; padding: 0; overflow: hidden; width: 48px; height: 68px; flex-shrink: 0; transition: border-color .15s, box-shadow .15s; display: flex; align-items: center; justify-content: center; }
-.thumb-btn:hover { border-color: #e8b84b55; box-shadow: 0 0 12px #e8b84b18; }
+/* ── Thumbnail ── */
+.thumb-btn {
+  background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 7px;
+  cursor: pointer; padding: 0; overflow: hidden; width: 46px; height: 66px; flex-shrink: 0;
+  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+  display: flex; align-items: center; justify-content: center;
+}
+.thumb-btn:hover { border-color: rgba(232,184,75,0.4); box-shadow: 0 0 16px rgba(232,184,75,0.12); }
 .thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
-.thumb-ph { color: #28283a; font-size: 20px; font-weight: 300; }
+.thumb-ph { color: var(--text-dim); font-size: 18px; font-weight: 300; }
 
-.type-sel { background: #0d0d10; border: 1px solid #1a1a22; border-radius: 3px; color: #e8b84b; font-family: 'Bebas Neue', sans-serif; font-size: 14px; letter-spacing: 1px; padding: 4px 5px; cursor: pointer; width: 54px; flex-shrink: 0; }
+/* ── Type selector ── */
+.type-sel {
+  background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--gold); font-family: 'Bebas Neue', sans-serif; font-size: 13px; letter-spacing: 1px;
+  padding: 4px 5px; cursor: pointer; width: 52px; flex-shrink: 0; appearance: none;
+  transition: border-color 0.15s;
+}
+.type-sel:focus { outline: none; border-color: var(--gold-border); }
 .type-sel option { background: #111114; }
 
-.name-in { flex: 1; background: transparent; border: 1px solid #1a1a22; border-radius: 3px; color: #b8b4b0; font-family: 'DM Sans', sans-serif; font-size: 13px; padding: 5px 9px; outline: none; transition: border-color .15s; min-width: 0; }
-.name-in:focus { border-color: #e8b84b44; color: #f0ede8; }
-.name-in::placeholder { color: #22222e; }
+/* ── Name input ── */
+.name-in {
+  flex: 1; background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: #a8a4b0; font-size: 12.5px; font-weight: 400; padding: 5px 9px; outline: none;
+  transition: border-color 0.15s var(--ease), color 0.15s; min-width: 0;
+}
+.name-in:focus { border-color: rgba(232,184,75,0.35); color: var(--text); }
+.name-in::placeholder { color: var(--text-dim); }
 
-.srch-btn { background: #131318; border: 1px solid #1c1c24; border-radius: 3px; color: #5a5868; font-size: 13px; padding: 5px 9px; cursor: pointer; flex-shrink: 0; transition: all .15s; line-height: 1; }
-.srch-btn:hover { border-color: #e8b84b66; background: #e8b84b10; }
+/* ── Search button ── */
+.srch-btn {
+  background: rgba(255,255,255,0.04); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--text-muted); padding: 6px 8px; flex-shrink: 0;
+  transition: all 0.15s var(--ease); line-height: 0; display: flex; align-items: center;
+}
+.srch-btn:hover { border-color: var(--gold-border); background: var(--gold-glow); color: var(--gold); }
 
-.price-cell { display: flex; align-items: center; gap: 4px; flex-shrink: 0; min-width: 88px; }
-.price-in { width: 52px; background: transparent; border: 1px solid #1a1a22; border-radius: 3px; color: #b0acb8; font-family: 'DM Sans', sans-serif; font-size: 12px; padding: 5px; outline: none; text-align: right; transition: border-color .15s; }
-.price-in:focus { border-color: #e8b84b55; color: #e8b84b; }
+/* ── Price cell ── */
+.price-cell { display: flex; align-items: center; gap: 4px; flex-shrink: 0; min-width: 90px; }
+.price-stack { display: flex; flex-direction: column; gap: 1px; }
+.price-row-inner { display: flex; align-items: center; gap: 3px; }
+.price-in {
+  width: 50px; background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: #9a96a8; font-size: 12px; padding: 4px 6px; outline: none; text-align: right;
+  transition: border-color 0.15s var(--ease), color 0.15s; font-variant-numeric: tabular-nums;
+}
+.price-in:focus { border-color: rgba(232,184,75,0.4); color: var(--gold); }
 .price-in::-webkit-inner-spin-button { display: none; }
 input[type=number] { -moz-appearance: textfield; }
-.curr { font-size: 11px; color: #383844; letter-spacing: 1px; }
-.price-converted { font-size: 11px; color: #4a6644; letter-spacing: 0.5px; }
-.cm-link { color: #4a88bf; font-size: 12px; text-decoration: none; transition: color .15s; margin-left: 2px; }
-.cm-link:hover { color: #7ab8ef; }
-.price-spin { font-size: 18px; color: #e8b84b; margin: 0 auto; }
+.curr { font-size: 10px; color: var(--text-dim); letter-spacing: 1px; font-weight: 500; }
+.price-dkk { font-size: 9.5px; color: rgba(74,154,90,0.6); letter-spacing: 0.3px; font-variant-numeric: tabular-nums; }
+.cm-link { color: #4a78af; font-size: 11px; text-decoration: none; transition: color 0.15s; }
+.cm-link:hover { color: #7ab0ef; }
+.price-spin { font-size: 17px; color: var(--gold); margin: 0 auto; }
 
-.own-btn { background: none; border: 1px solid #1a2a1a; color: #2a3a2a; border-radius: 3px; font-size: 13px; cursor: pointer; padding: 4px 7px; line-height: 1.2; transition: all .15s; flex-shrink: 0; }
-.own-btn:hover { border-color: #3a6a3a; color: #5a9a5a; }
-.own-btn.owned-on { border-color: #3a6a3a88; color: #5aaa5a; background: #1a3a1a; }
+/* ── Own button ── */
+.own-btn {
+  background: none; border: 1px solid rgba(74,154,90,0.2); color: var(--text-dim);
+  border-radius: var(--radius-sm); padding: 5px 7px; line-height: 0; flex-shrink: 0;
+  transition: all 0.15s var(--ease); display: flex; align-items: center;
+}
+.own-btn:hover { border-color: rgba(74,154,90,0.5); color: var(--green); background: var(--green-dim); }
+.own-btn.owned-on { border-color: rgba(74,154,90,0.5); color: var(--green); background: var(--green-dim); }
 
+/* ── Delete button ── */
+.del {
+  background: none; border: 1px solid var(--border); color: var(--text-dim);
+  border-radius: var(--radius-sm); font-size: 13px; padding: 5px 7px; line-height: 0;
+  transition: all 0.15s var(--ease); flex-shrink: 0; display: flex; align-items: center;
+}
+.del:hover { border-color: rgba(192,57,43,0.4); color: var(--red); background: rgba(192,57,43,0.08); }
+
+/* ── Add set ── */
+.add-wrap { margin-top: 28px; display: flex; justify-content: center; }
+.add-set {
+  background: var(--bg-card); border: 1px dashed rgba(255,255,255,0.1); color: var(--text-muted);
+  font-size: 11px; letter-spacing: 2px; text-transform: uppercase; font-weight: 500;
+  padding: 16px 40px; border-radius: var(--radius); transition: all 0.2s var(--ease);
+  width: 100%; max-width: 420px; display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+.add-set:hover { border-color: var(--gold-border); color: var(--gold); background: var(--gold-glow); box-shadow: 0 0 0 1px rgba(232,184,75,0.04); }
+
+/* ── Spinner ── */
 @keyframes spin { to { transform: rotate(360deg); } }
 .spinning { display: inline-block; animation: spin 0.9s linear infinite; }
 
-.del { background: none; border: 1px solid #1a1a22; color: #323240; border-radius: 3px; font-size: 14px; cursor: pointer; padding: 3px 7px; line-height: 1.2; transition: all .15s; flex-shrink: 0; }
-.del:hover { border-color: #8b202044; color: #c0392b; }
-
-.add-wrap { margin-top: 24px; display: flex; justify-content: center; }
-.add-set { background: #111114; border: 1px dashed #1c1c24; color: #383844; font-family: 'DM Sans', sans-serif; font-size: 12px; letter-spacing: 2px; text-transform: uppercase; padding: 14px 36px; border-radius: 4px; cursor: pointer; transition: all .2s; width: 100%; max-width: 400px; }
-.add-set:hover { border-color: #e8b84b44; color: #e8b84b; background: #e8b84b06; }
-
-.overlay { position: fixed; inset: 0; background: #000000d0; z-index: 200; display: flex; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(6px); }
-.modal { background: #111114; border: 1px solid #252535; border-radius: 10px; width: 100%; max-width: 700px; max-height: 88vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 32px 80px #00000080; }
-.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 18px 22px 14px; border-bottom: 1px solid #1a1a24; flex-shrink: 0; }
-.modal-title { font-family: 'Bebas Neue', sans-serif; font-size: 20px; letter-spacing: 2px; color: #f0ede8; }
-.x-btn { background: none; border: none; color: #484858; font-size: 16px; cursor: pointer; transition: color .15s; padding: 2px 6px; }
-.x-btn:hover { color: #e8e4df; }
-.modal-bar { display: flex; gap: 8px; padding: 14px 22px; border-bottom: 1px solid #1a1a24; flex-shrink: 0; }
-.modal-input { flex: 1; background: #0a0a0d; border: 1px solid #222230; border-radius: 5px; color: #e8e4df; font-family: 'DM Sans', sans-serif; font-size: 14px; padding: 9px 14px; outline: none; transition: border-color .15s; }
-.modal-input:focus { border-color: #e8b84b66; }
-.modal-input::placeholder { color: #28283a; }
-.modal-go { background: #e8b84b18; border: 1px solid #e8b84b66; color: #e8b84b; font-family: 'DM Sans', sans-serif; font-size: 12px; letter-spacing: 1px; padding: 9px 20px; border-radius: 5px; cursor: pointer; transition: all .15s; text-transform: uppercase; white-space: nowrap; }
-.modal-go:hover { background: #e8b84b28; }
-.modal-msg { padding: 10px 22px; font-size: 12px; color: #4a4858; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-.modal-msg.muted { color: #303040; }
-.modal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; padding: 14px 22px 20px; overflow-y: auto; flex: 1; }
-.res-card { background: #0d0d10; border: 1px solid #1a1a24; border-radius: 7px; cursor: pointer; padding: 8px; display: flex; flex-direction: column; gap: 7px; transition: all .15s; text-align: left; }
-.res-card:hover { border-color: #e8b84b66; background: #e8b84b0a; transform: translateY(-2px); box-shadow: 0 6px 24px #00000040; }
-.res-img { width: 100%; border-radius: 5px; display: block; aspect-ratio: 5/7; object-fit: cover; }
+/* ── Modal ── */
+.overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 200;
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+}
+.modal {
+  background: rgba(14,14,18,0.96); border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 16px; width: 100%; max-width: 700px; max-height: 88vh;
+  display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 40px 100px rgba(0,0,0,0.7), 0 0 0 1px rgba(232,184,75,0.06);
+}
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 18px 24px 14px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.modal-title { font-family: 'Bebas Neue', sans-serif; font-size: 20px; letter-spacing: 2.5px; color: var(--text); }
+.x-btn {
+  background: none; border: 1px solid var(--border); color: var(--text-muted);
+  font-size: 14px; border-radius: var(--radius-sm); padding: 5px 8px;
+  transition: all 0.15s; line-height: 1;
+}
+.x-btn:hover { border-color: var(--border-hover); color: var(--text); }
+.modal-bar { display: flex; gap: 8px; padding: 14px 24px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.modal-input {
+  flex: 1; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 8px;
+  color: var(--text); font-size: 14px; padding: 10px 14px; outline: none;
+  transition: border-color 0.15s var(--ease);
+}
+.modal-input:focus { border-color: var(--gold-border); }
+.modal-input::placeholder { color: var(--text-dim); }
+.modal-go {
+  background: var(--gold-dim); border: 1px solid var(--gold-border); color: var(--gold);
+  font-size: 11px; letter-spacing: 1.5px; font-weight: 600;
+  padding: 10px 20px; border-radius: 8px; transition: all 0.15s var(--ease);
+  text-transform: uppercase; white-space: nowrap;
+}
+.modal-go:hover { background: rgba(232,184,75,0.22); box-shadow: 0 0 20px rgba(232,184,75,0.12); }
+.modal-msg {
+  padding: 10px 24px; font-size: 12px; color: var(--text-muted);
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+}
+.modal-msg.muted { color: var(--text-dim); }
+.modal-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px; padding: 14px 24px 22px; overflow-y: auto; flex: 1;
+}
+.res-card {
+  background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 10px;
+  cursor: pointer; padding: 8px; display: flex; flex-direction: column; gap: 7px;
+  transition: all 0.2s var(--ease); text-align: left;
+}
+.res-card:hover {
+  border-color: var(--gold-border); background: var(--gold-glow);
+  transform: translateY(-2px); box-shadow: 0 8px 28px rgba(0,0,0,0.4);
+}
+.res-img { width: 100%; border-radius: 6px; display: block; aspect-ratio: 5/7; object-fit: cover; }
 .res-meta { display: flex; flex-direction: column; gap: 2px; }
 .res-name { font-size: 11px; color: #c0bcb8; font-weight: 500; line-height: 1.3; }
 .res-set { font-size: 10px; color: #404050; line-height: 1.3; }
-.res-artist { font-size: 9px; color: #e8b84b88; letter-spacing: 0.5px; }
+.res-artist { font-size: 9px; color: rgba(232,184,75,0.5); letter-spacing: 0.3px; }
+
+@media (max-width: 500px) {
+  .app { padding: 32px 16px 80px; }
+  .grid { grid-template-columns: 1fr; }
+  .logo { font-size: 40px; }
+  .controls { gap: 6px; }
+}
 `;
