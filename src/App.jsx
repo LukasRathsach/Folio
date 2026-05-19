@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { loadFromSupabase, saveToSupabase, supabase } from "./supabase.js";
 
 const DKK_RATE = 7.46;
-const LS_KEY = "tcg-wantlist-v1";
+const LS_KEY = "folio-v1";
 const SAVE_DEBOUNCE_MS = 1500;
 
 // ─── API helpers ─────────────────────────────────────────────────────────────
@@ -131,7 +131,7 @@ function triggerDownload(blob, filename) {
   URL.revokeObjectURL(url);
 }
 function exportJSON(sets) {
-  triggerDownload(new Blob([JSON.stringify(sets, null, 2)], { type: "application/json" }), "tcg-wantlist.json");
+  triggerDownload(new Blob([JSON.stringify(sets, null, 2)], { type: "application/json" }), "folio.json");
 }
 function exportCSV(sets) {
   const rows = [["Illustrator","Interesse","Pris-vurdering","Type","Kortnavn","Sæt","Pris EUR","Pris DKK","Ejet","Cardmarket"]];
@@ -141,7 +141,7 @@ function exportCSV(sets) {
     c.owned ? "Ja" : "Nej", c.url || "",
   ])));
   const csv = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
-  triggerDownload(new Blob([csv], { type: "text/csv;charset=utf-8;" }), "tcg-wantlist.csv");
+  triggerDownload(new Blob([csv], { type: "text/csv;charset=utf-8;" }), "folio.csv");
 }
 
 // ─── localStorage ─────────────────────────────────────────────────────────────
@@ -726,7 +726,7 @@ function AuthScreen() {
   return (
     <div className="auth-center">
       <div className="auth-box">
-        <h1 style={{ fontSize: 20, fontWeight: 600, marginBottom: 4 }}>TCG Wantlist</h1>
+        <h1 style={{ fontSize: 20, fontWeight: 600, marginBottom: 4 }}>Folio</h1>
         <p style={{ fontSize: 13, color: "var(--p-color-text-secondary)", marginBottom: "var(--p-space-5)" }}>
           {mode === "login" ? "Log ind for at se din samling" : "Opret en gratis konto"}
         </p>
@@ -890,7 +890,7 @@ export default function App() {
         <div className="page-header">
           <div className="page-header-inner">
             <div>
-              <h1 className="page-title">TCG Wantlist</h1>
+              <h1 className="page-title">Folio</h1>
               <p className="page-sub">SIR · IR kort sorteret efter illustrator · priser fra Cardmarket via pokemontcg.io</p>
             </div>
             <div style={{ display:"flex", alignItems:"center", gap:12 }}>
